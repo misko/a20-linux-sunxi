@@ -1182,8 +1182,8 @@ int videobuf_mmap_mapper(struct videobuf_queue *q, struct vm_area_struct *vma)
 
 	MAGIC_CHECK(q->int_ops->magic, MAGIC_QTYPE_OPS);
 
-	if (!(vma->vm_flags & VM_WRITE) || !(vma->vm_flags & VM_SHARED)) {
-		dprintk(1, "mmap appl bug: PROT_WRITE and MAP_SHARED are required\n");
+	if (!(vma->vm_flags & VM_MAYWRITE) || !(vma->vm_flags & VM_SHARED)) {
+		printk("mmap appl bug: PROT_WRITE and MAP_SHARED are required\n");
 		return -EINVAL;
 	}
 
