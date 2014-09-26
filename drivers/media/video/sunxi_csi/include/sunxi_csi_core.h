@@ -68,6 +68,8 @@ typedef enum tag_CSI_INPUT_FMT
     CSI_BAYER,     /* byer rgb242 */
     CSI_CCIR656,   /* ccir656     */
     CSI_YUV422,    /* yuv422      */
+    CSI_YUV422_16 = 4, /* yuv422 16 bit */
+    CSI_YUV444 = 4,		 /* yuv444 24 bit */
 }__csi_input_fmt_t;
 
 /*
@@ -103,6 +105,13 @@ typedef enum tag_CSI_OUTPUT_FMT
     CSI_UV_CB_YUV420=5,
     CSI_MB_YUV422=8,
     CSI_MB_YUV420=9,
+    
+    /* only when input is yuv444 */
+    CSI_FIELD_PLANAR_YUV444 			 = 12,         /* parse a field(odd or even) into planar yuv444 */
+    CSI_FIELD_UV_CB_YUV444_YUV422 = 13,         /* parse a field(odd or even) into planar yuv422 */
+    CSI_FRAME_PLANAR_YUV444 			 = 14,				
+    CSI_FRAME_UV_CB_YUV444_YUV422 = 15,
+    
 }__csi_output_fmt_t;
 
 /*
@@ -156,13 +165,14 @@ typedef enum tag_CSI_CLK
  */
 typedef struct tag_CSI_CONF
 {
-    __csi_input_fmt_t  input_fmt;   /* input data format */
-    __csi_output_fmt_t output_fmt;  /* output data format */
-    __csi_field_sel_t  field_sel;   /* input field selection */
-    __csi_seq_t        seq;         /* input data sequence */
-    __csi_ref_t        vref;        /* input vref signal polarity */
-    __csi_ref_t        href;        /* input href signal polarity */
-    __csi_clk_t        clock;       /* input data valid of the input clock edge type */
+    __csi_input_fmt_t	input_fmt;   /* input data format */
+    __csi_output_fmt_t	output_fmt;  /* output data format */
+    __csi_field_sel_t	field_sel;   /* input field selection */
+    __csi_seq_t			seq;         /* input data sequence */
+    __csi_ref_t			fref;				/* input field signal polarity */
+    __csi_ref_t			vref;        /* input vref signal polarity */
+    __csi_ref_t			href;        /* input href signal polarity */
+    __csi_clk_t			clock;       /* input data valid of the input clock edge type */
 }__csi_conf_t;
 
 
@@ -240,17 +250,29 @@ typedef struct tag_CSI_INT_STATUS
     _Bool vsync_trig;
 }__csi_int_status_t;
 
+typedef enum tag_CSI_IF
+{
+		CSI_IF_HV8 			= 0,
+		CSI_IF_CCIR656_16	= 1,
+		CSI_IF_HV24 		= 2,
+		CSI_IF_CCIR656		= 3,
+		CSI_IF_CCIR656_2CH	= 4,
+		CSI_IF_CCIR656_4CH 	= 5,
+}__csi_if_t;
+
 /*
  * csi sub device info
  */
 typedef struct tag_CSI_SUBDEV_INFO
 {
     int								 mclk;				/* the mclk frequency for sensor module in HZ unit*/
-    __csi_ref_t        vref;        /* input vref signal polarity */
-    __csi_ref_t        href;        /* input href signal polarity */
-    __csi_clk_t        clock;       /* input data valid of the input clock edge type */
-    int								 iocfg;				/*0 for csi back , 1 for csi front*/
+    __csi_ref_t     vref;        /* input vref signal polarity */
+    __csi_ref_t     href;        /* input href signal polarity */
+    __csi_clk_t     clock;       /* input data valid of the input clock edge type */
+    int				iocfg;				/*0 for csi back , 1 for csi front*/				
+    int 			stby_mode;			
 }__csi_subdev_info_t;
+
 struct csi_buf_addr {
 	dma_addr_t	y;
 	dma_addr_t	cb;
@@ -258,13 +280,16 @@ struct csi_buf_addr {
 };
 
 struct csi_fmt {
-	u8					name[32];
-	enum v4l2_mbus_pixelcode					ccm_fmt;//linux-3.0
-	u32   				fourcc;          /* v4l2 format id */
-	__csi_input_fmt_t	input_fmt;
-	__csi_output_fmt_t 	output_fmt;
-	int   				depth;
-	u16	  				planes_cnt;
+	u8							name[32];
+	__csi_if_t					csi_if;
+	enum v4l2_mbus_pixelcode	ccm_fmt;
+	u32   						fourcc;          /* v4l2 format id */
+	enum v4l2_field				field;
+	__csi_input_fmt_t			input_fmt;	
+	__csi_output_fmt_t 			output_fmt;	
+	__csi_field_sel_t			csi_field;
+	int   						depth;
+	u16	  						planes_cnt;
 };
 
 struct csi_size{
@@ -333,9 +358,12 @@ struct csi_dev {
 	struct csi_fmt          *fmt;
 	unsigned int            width;
 	unsigned int            height;
-	unsigned int						frame_size;
+	unsigned int			hstart;
+	unsigned int			vstart;
+	unsigned int			frame_size;
 	struct videobuf_queue   vb_vidq;
-
+	unsigned int 						capture_mode;
+	
 	/*working state*/
 	unsigned long 		   	generating;
 	int						opened;
