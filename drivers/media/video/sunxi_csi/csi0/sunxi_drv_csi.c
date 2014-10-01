@@ -458,7 +458,6 @@ static struct csi_fmt *get_format(struct csi_dev *dev, struct v4l2_format *f)
 //				f->fmt.pix.sizeimage = ccm_fmt.fmt.pix.sizeimage;//linux-3.0
 				
 				if(ccm_fmt.field == fmt->field) {
-					printk("%s: field ok!\n",__func__);
 					break;
 				}
 				else
@@ -644,13 +643,14 @@ static int csi_clk_out_set(struct csi_dev *dev)
 		if (dev->csi_clk_src == NULL) {
        		csi_err("get csi0 hosc source clk error!\n");
 			return -1;
-    	}
+    		}
 	}else{
+		printk("Using PLL1 for CSI\n");
 		dev->csi_clk_src=clk_get(NULL,"video_pll1");
 		if (dev->csi_clk_src == NULL) {
        		csi_err("get csi0 video pll1 source clk error!\n");
 			return -1;
-    	}
+    		}
 	}
 	ret = clk_set_parent(dev->csi_module_clk, dev->csi_clk_src);
 	if (ret == -1) {
@@ -786,6 +786,12 @@ static irqreturn_t csi_isr(int irq, void *priv)
 	do_gettimeofday(&buf->vb.ts);
 	buf->vb.field_count++;
 
+#if DBG_EN == 1		
+	csi_dbg(3,"frame interval = %ld\n",buf->vb.ts.tv_sec*1000000+buf->vb.ts.tv_usec - (sec*1000000+usec));
+	sec = buf->vb.ts.tv_sec;
+	usec = buf->vb.ts.tv_usec;
+#endif
+
 	dev->ms += jiffies_to_msecs(jiffies - dev->jiffies);
 	dev->jiffies = jiffies;
 
@@ -831,9 +837,7 @@ unlock:
 	spin_unlock(&dev->slock);
 	
 	if (dev->capture_mode == V4L2_MODE_IMAGE) {	
-		bsp_csi_int_clear_status(dev,CSI_INT_VSYNC_TRIG);
 		bsp_csi_int_clear_status(dev,CSI_INT_CAPTURE_DONE);
-		bsp_csi_int_enable(dev,CSI_INT_VSYNC_TRIG);
 		bsp_csi_int_enable(dev,CSI_INT_CAPTURE_DONE);
 	} else {
 		bsp_csi_int_clear_status(dev,CSI_INT_FRAME_DONE);
@@ -927,6 +931,7 @@ static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned
 	}
 
 	while (*size * *count > CSI_MAX_FRAME_MEM) {
+		csi_err("buffer count is greater than CSI_MAX_FRAME_MEM\n");
 		(*count)--;
 	}
 	csi_print("%s, buffer count=%d, size=%d\n", __func__,*count, *size);
@@ -1037,17 +1042,6 @@ static int vidioc_querycap(struct file *file, void  *priv,
 			    V4L2_CAP_READWRITE;
 	return 0;
 }
-static int vidioc_enum_framesizes_cap(struct file *file, void *fh,
-                                          struct v4l2_frmsizeenum *fsize)
-{
-         if (fsize->index > 0)
-                 return -EINVAL;
- 
-         fsize->type = V4L2_FRMIVAL_TYPE_STEPWISE;//V4L2_FRMIVAL_TYPE_CONTINUOUS;//V4L2_FRMIVAL_TYPE_DISCRETE;
-
- 
-         return 0;
-}
 static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 					struct v4l2_fmtdesc *f)
 {
@@ -1064,7 +1058,34 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 	f->pixelformat = fmt->fourcc;
 	return 0;
 }
+static int vidioc_enum_framesizes_cap(struct file *file, void *fh,
+          					struct v4l2_frmsizeenum *fsize)
+{
+	struct csi_dev *dev = video_drvdata(file);
+  
+	csi_dbg(0, "vidioc_enum_framesizes\n");
 
+	if (dev == NULL || dev->sd->ops->video->enum_framesizes==NULL) {
+		printk("v4l2 device does not support enum_framesizes\n");
+		return -EINVAL;
+	} 
+  
+	return v4l2_subdev_call(dev->sd,video,enum_framesizes,fsize);
+}
+static int vidioc_enum_frameintervals_cap(struct file *file, void *fh,
+          					struct v4l2_frmivalenum *fival)
+{
+	struct csi_dev *dev = video_drvdata(file);
+  
+	csi_dbg(0, "vidioc_enum_frameintervals\n");
+
+	if (dev == NULL || dev->sd->ops->video->enum_frameintervals==NULL) {
+		printk("v4l2 device does not support enum_frameintervals\n");
+		return -EINVAL;
+	} 
+  
+	return v4l2_subdev_call(dev->sd,video,enum_frameintervals,fival);
+}
 static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 					struct v4l2_format *f)
 {
@@ -1161,7 +1182,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	dev->csi_mode.output_fmt = dev->fmt->output_fmt;
 	dev->csi_mode.input_fmt = dev->fmt->input_fmt;
 	dev->csi_mode.field_sel = dev->fmt->csi_field;
-	printk("output_fmt=%d input_fmt=%d %s\n",dev->fmt->output_fmt, dev->fmt->input_fmt, dev->fmt->name);
+	//printk("output_fmt=%d input_fmt=%d %s\n",dev->fmt->output_fmt, dev->fmt->input_fmt, dev->fmt->name);
 
 	switch(dev->fmt->ccm_fmt) {
 	case V4L2_MBUS_FMT_YUYV8_2X8://linux-3.0
@@ -1765,26 +1786,27 @@ static const struct v4l2_file_operations csi_fops = {
 };
 
 static const struct v4l2_ioctl_ops csi_ioctl_ops = {
-	.vidioc_querycap          = vidioc_querycap,
-	.vidioc_enum_fmt_vid_cap  = vidioc_enum_fmt_vid_cap,
-	.vidioc_enum_framesizes	  = vidioc_enum_framesizes_cap,
-	.vidioc_g_fmt_vid_cap     = vidioc_g_fmt_vid_cap,
-	.vidioc_try_fmt_vid_cap   = vidioc_try_fmt_vid_cap,
-	.vidioc_s_fmt_vid_cap     = vidioc_s_fmt_vid_cap,
-	.vidioc_reqbufs           = vidioc_reqbufs,
-	.vidioc_querybuf          = vidioc_querybuf,
-	.vidioc_qbuf              = vidioc_qbuf,
-	.vidioc_dqbuf             = vidioc_dqbuf,
-	.vidioc_enum_input        = vidioc_enum_input,
-	.vidioc_g_input           = vidioc_g_input,
-	.vidioc_s_input           = vidioc_s_input,
-	.vidioc_streamon          = vidioc_streamon,
-	.vidioc_streamoff         = vidioc_streamoff,
-	.vidioc_queryctrl         = vidioc_queryctrl,
-	.vidioc_g_ctrl            = vidioc_g_ctrl,
-	.vidioc_s_ctrl            = vidioc_s_ctrl,
-	.vidioc_g_parm		 			  = vidioc_g_parm,
-	.vidioc_s_parm		  			= vidioc_s_parm,
+	.vidioc_querycap		= vidioc_querycap,
+	.vidioc_enum_fmt_vid_cap	= vidioc_enum_fmt_vid_cap,
+	.vidioc_enum_framesizes		= vidioc_enum_framesizes_cap,
+	.vidioc_enum_frameintervals	= vidioc_enum_frameintervals_cap,
+	.vidioc_g_fmt_vid_cap		= vidioc_g_fmt_vid_cap,
+	.vidioc_try_fmt_vid_cap		= vidioc_try_fmt_vid_cap,
+	.vidioc_s_fmt_vid_cap  		= vidioc_s_fmt_vid_cap,
+	.vidioc_reqbufs        		= vidioc_reqbufs,
+	.vidioc_querybuf		= vidioc_querybuf,
+	.vidioc_qbuf   			= vidioc_qbuf,
+	.vidioc_dqbuf   		= vidioc_dqbuf,
+	.vidioc_enum_input        	= vidioc_enum_input,
+	.vidioc_g_input 		= vidioc_g_input,
+	.vidioc_s_input 		= vidioc_s_input,
+	.vidioc_streamon		= vidioc_streamon,
+	.vidioc_streamoff         	= vidioc_streamoff,
+	.vidioc_queryctrl         	= vidioc_queryctrl,
+	.vidioc_g_ctrl  		= vidioc_g_ctrl,
+	.vidioc_s_ctrl  		= vidioc_s_ctrl,
+	.vidioc_g_parm			= vidioc_g_parm,
+	.vidioc_s_parm			= vidioc_s_parm,
 
 #ifdef CONFIG_VIDEO_V4L1_COMPAT
 	.vidiocgmbuf              = vidiocgmbuf,
