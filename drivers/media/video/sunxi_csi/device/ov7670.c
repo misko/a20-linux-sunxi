@@ -40,7 +40,7 @@ MODULE_LICENSE("GPL");
 #endif
 #define csi_dev_err(x,arg...) printk(KERN_INFO"[CSI_ERR][OV7670]"x,##arg)
 #define csi_dev_print(x,arg...) printk(KERN_INFO"[CSI][OV7670]"x,##arg)
-#define MCLK (27*1000*1000)
+#define MCLK (24*1000*1000)
 #define VREF_POL	CSI_LOW
 #define HREF_POL	CSI_HIGH
 #define CLK_POL		CSI_RISING
@@ -611,6 +611,7 @@ static int ov7670_write_array(struct v4l2_subdev *sd, struct regval_list *vals)
 static int ov7670_power(struct v4l2_subdev *sd, int on)
 {
 	struct csi_dev *dev=(struct csi_dev *)dev_get_drvdata(sd->v4l2_dev->dev);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct ov7670_info *info = to_state(sd);
 	char csi_stby_str[32],csi_power_str[32],csi_reset_str[32];
 
@@ -624,6 +625,12 @@ static int ov7670_power(struct v4l2_subdev *sd, int on)
 	  strcpy(csi_reset_str,"csi_reset_b");
 	}
 
+  //make sure that no device can access i2c bus during sensor initial or power down
+  //when using i2c_lock_adpater function, the following codes must not access i2c bus before calling i2c_unlock_adapter
+  i2c_lock_adapter(client->adapter);
+  
+  //insure that clk_disable() and clk_enable() are called in pair 
+  //when calling CSI_SUBDEV_STBY_ON/OFF and CSI_SUBDEV_PWR_ON/OFF
   switch(on)
 	{
 		case CSI_SUBDEV_STBY_ON:
@@ -728,6 +735,8 @@ static int ov7670_power(struct v4l2_subdev *sd, int on)
 			return -EINVAL;
 	}
 
+	//remember to unlock i2c adapter, so the device can access the i2c bus again
+	i2c_unlock_adapter(client->adapter);	
 	return 0;
 }
 
@@ -939,9 +948,7 @@ static struct ov7670_format_struct {
 		.bpp		= 1
 	},
 };
-#define N_OV7670_FMTS ARRAY_SIZE(ov7670_formats)
-
-
+#define N_OV7670_FMTS (ARRAY_SIZE(ov7670_formats))
 /*
  * Then there is the issue of window sizes.  Try to capture the info here.
  */
@@ -994,16 +1001,16 @@ static struct ov7670_win_size {
 		.regs 		= NULL,
 	},
 	/* CIF */
-	{
+	/*{
 		.width		= CIF_WIDTH,
 		.height		= CIF_HEIGHT,
 		.com7_bit	= COM7_FMT_CIF,
-		.hstart		= 170,		/* Empirically determined */
+		.hstart		= 170,		// Empirically determined 
 		.hstop		=  90,
 		.vstart		=  14,
 		.vstop		= 494,
 		.regs 		= NULL,
-	},
+	},*/
 	/* QVGA */
 	{
 		.width		= QVGA_WIDTH,
@@ -1016,16 +1023,16 @@ static struct ov7670_win_size {
 		.regs 		= NULL,
 	},
 	/* QCIF */
-	{
+	/*{
 		.width		= QCIF_WIDTH,
 		.height		= QCIF_HEIGHT,
-		.com7_bit	= COM7_FMT_VGA, /* see comment above */
-		.hstart		= 456,		/* Empirically determined */
+		.com7_bit	= COM7_FMT_VGA, // see comment above 
+		.hstart		= 456,		// Empirically determined 
 		.hstop		=  24,
 		.vstart		=  14,
 		.vstop		= 494,
 		.regs 		= ov7670_qcif_regs,
-	},
+	},*/
 };
 
 #define N_WIN_SIZES (ARRAY_SIZE(ov7670_win_sizes))
@@ -1079,7 +1086,47 @@ static int ov7670_enum_fmt(struct v4l2_subdev *sd, unsigned index,
 //	fmt->pixelformat = ofmt->pixelformat;
 	return 0;
 }
+static int sensor_enum_intervals(struct v4l2_subdev *sd, struct v4l2_frmivalenum *ivalnum)
+{
 
+	//printk("\n\n\nenum_intervals! index=%d %dx%d code=%d\n\n\n\n",ivalnum->index, ivalnum->width,ivalnum->height,ivalnum->pixel_format);
+	if(ivalnum->index>1)
+		return -EINVAL;
+
+	if(ivalnum->index==0)
+		ivalnum->discrete.denominator=30;
+	else
+		ivalnum->discrete.denominator=15;
+
+	ivalnum->type=V4L2_FRMIVAL_TYPE_DISCRETE;
+	ivalnum->discrete.numerator=1;
+
+	/*if (ivalnum->index)
+		return -EINVAL;
+	ivalnum->type = V4L2_FRMIVAL_TYPE_STEPWISE; // V4L2_FRMIVAL_TYPE_CONTINUOUS; //
+
+	ivalnum->stepwise.min.numerator = 1;
+	ivalnum->stepwise.min.denominator = 10;
+
+	ivalnum->stepwise.max.numerator = 1;
+	ivalnum->stepwise.max.denominator = 30;
+ 
+	ivalnum->stepwise.step.numerator = 1;
+	ivalnum->stepwise.step.denominator = 15;*/
+	//printk("enum_intervals\n%dx%d\n",ivalnum->width,ivalnum->height);
+	return 0;
+}
+static int sensor_enum_size(struct v4l2_subdev *sd, struct v4l2_frmsizeenum *fsize)
+{
+  if(fsize->index > N_WIN_SIZES-1)
+  	return -EINVAL;
+  
+  fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+  fsize->discrete.width = ov7670_win_sizes[fsize->index].width;
+  fsize->discrete.height = ov7670_win_sizes[fsize->index].height;
+  
+  return 0;
+}
 
 static int ov7670_try_fmt_internal(struct v4l2_subdev *sd,
 		//struct v4l2_format *fmt,
@@ -1845,6 +1892,8 @@ static const struct v4l2_subdev_core_ops ov7670_core_ops = {
 
 static const struct v4l2_subdev_video_ops ov7670_video_ops = {
 	.enum_mbus_fmt = ov7670_enum_fmt,//linux-3.0
+	.enum_framesizes	= sensor_enum_size,
+	.enum_frameintervals	= sensor_enum_intervals,
 	.try_mbus_fmt = ov7670_try_fmt,//linux-3.0
 	.s_mbus_fmt = ov7670_s_fmt,//linux-3.0
 	.s_parm = ov7670_s_parm,
