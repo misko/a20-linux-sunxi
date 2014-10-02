@@ -47,25 +47,21 @@ MODULE_LICENSE("GPL");
 #define IO_CFG		0						//0 for csi0
 
 //define the voltage level of control signal
-#define CSI_STBY_ON			1
+#define CSI_STBY_ON		1
 #define CSI_STBY_OFF 		0
-#define CSI_RST_ON			0
-#define CSI_RST_OFF			1
-#define CSI_PWR_ON			1
-#define CSI_PWR_OFF			0
+#define CSI_RST_ON		0
+#define CSI_RST_OFF		1
+#define CSI_PWR_ON		1
+#define CSI_PWR_OFF		0
 
 /*
  * Basic window sizes.  These probably belong somewhere more globally
  * useful.
  */
-#define VGA_WIDTH		640
+#define VGA_WIDTH	640
 #define VGA_HEIGHT	480
 #define QVGA_WIDTH	320
 #define QVGA_HEIGHT	240
-#define CIF_WIDTH		352
-#define CIF_HEIGHT	288
-#define QCIF_WIDTH	176
-#define	QCIF_HEIGHT	144
 
 /*
  * Our nominal (default) frame rate.
@@ -732,6 +728,7 @@ static int ov7670_power(struct v4l2_subdev *sd, int on)
 			gpio_set_one_pin_io_status(dev->csi_pin_hd,0,csi_stby_str);//set the gpio to input
 			break;
 		default:
+			i2c_unlock_adapter(client->adapter);
 			return -EINVAL;
 	}
 
@@ -948,7 +945,9 @@ static struct ov7670_format_struct {
 		.bpp		= 1
 	},
 };
-#define N_OV7670_FMTS (ARRAY_SIZE(ov7670_formats))
+#define N_OV7670_FMTS ARRAY_SIZE(ov7670_formats)
+
+
 /*
  * Then there is the issue of window sizes.  Try to capture the info here.
  */
@@ -1000,17 +999,6 @@ static struct ov7670_win_size {
 		.vstop		= 490,
 		.regs 		= NULL,
 	},
-	/* CIF */
-	/*{
-		.width		= CIF_WIDTH,
-		.height		= CIF_HEIGHT,
-		.com7_bit	= COM7_FMT_CIF,
-		.hstart		= 170,		// Empirically determined 
-		.hstop		=  90,
-		.vstart		=  14,
-		.vstop		= 494,
-		.regs 		= NULL,
-	},*/
 	/* QVGA */
 	{
 		.width		= QVGA_WIDTH,
@@ -1022,17 +1010,6 @@ static struct ov7670_win_size {
 		.vstop		= 494,
 		.regs 		= NULL,
 	},
-	/* QCIF */
-	/*{
-		.width		= QCIF_WIDTH,
-		.height		= QCIF_HEIGHT,
-		.com7_bit	= COM7_FMT_VGA, // see comment above 
-		.hstart		= 456,		// Empirically determined 
-		.hstop		=  24,
-		.vstart		=  14,
-		.vstop		= 494,
-		.regs 		= ov7670_qcif_regs,
-	},*/
 };
 
 #define N_WIN_SIZES (ARRAY_SIZE(ov7670_win_sizes))
@@ -1715,11 +1692,11 @@ static int ov7670_queryctrl(struct v4l2_subdev *sd,
 	case V4L2_CID_AUTOGAIN:
 		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 1);
 	case V4L2_CID_EXPOSURE:
-		return v4l2_ctrl_query_fill(qc, 0, 65535, 1, 500);
+		return v4l2_ctrl_query_fill(qc, 0, 500, 1, 256);
 	case V4L2_CID_EXPOSURE_AUTO:
 		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
-	case V4L2_CID_CAMERA_FLASH_MODE:
-	  return v4l2_ctrl_query_fill(qc, 0, 4, 1, 0);
+	/*case V4L2_CID_CAMERA_FLASH_MODE:
+	  return v4l2_ctrl_query_fill(qc, 0, 4, 1, 0);*/
 	}
 	return -EINVAL;
 }

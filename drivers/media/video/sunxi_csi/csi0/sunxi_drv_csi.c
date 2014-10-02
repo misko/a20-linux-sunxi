@@ -815,34 +815,10 @@ set_next_addr:
 	csi_set_addr(dev,buf);
 
 unlock:
-	/*bsp_csi_int_get_status(dev, &status);
-	if((status.buf_0_overflow) || (status.buf_1_overflow) || (status.buf_2_overflow) || (status.hblank_overflow))
-	{
-		if((status.buf_0_overflow) || (status.buf_1_overflow) || (status.buf_2_overflow)) {
-			bsp_csi_int_clear_status(dev,CSI_INT_BUF_0_OVERFLOW);
-			bsp_csi_int_clear_status(dev,CSI_INT_BUF_1_OVERFLOW);
-			bsp_csi_int_clear_status(dev,CSI_INT_BUF_2_OVERFLOW);
-			csi_err("fifo overflow\n");
-		}
-		
-		if(status.hblank_overflow) {
-			bsp_csi_int_clear_status(dev,CSI_INT_HBLANK_OVERFLOW);
-			csi_err("hblank overflow\n");
-		}
-		csi_err("reset csi module\n");
-		bsp_csi_close(dev);
-		bsp_csi_open(dev);
-	}*/
-		
 	spin_unlock(&dev->slock);
 	
-	if (dev->capture_mode == V4L2_MODE_IMAGE) {	
-		bsp_csi_int_clear_status(dev,CSI_INT_CAPTURE_DONE);
-		bsp_csi_int_enable(dev,CSI_INT_CAPTURE_DONE);
-	} else {
-		bsp_csi_int_clear_status(dev,CSI_INT_FRAME_DONE);
-		bsp_csi_int_enable(dev,CSI_INT_FRAME_DONE);
-	}
+	bsp_csi_int_clear_status(dev,CSI_INT_FRAME_DONE);
+	bsp_csi_int_enable(dev,CSI_INT_FRAME_DONE);
 	
 	return IRQ_HANDLED;
 }
@@ -1042,6 +1018,7 @@ static int vidioc_querycap(struct file *file, void  *priv,
 			    V4L2_CAP_READWRITE;
 	return 0;
 }
+
 static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 					struct v4l2_fmtdesc *f)
 {
@@ -1090,7 +1067,7 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 					struct v4l2_format *f)
 {
 	struct csi_dev *dev = video_drvdata(file);
-	printk("%s: %dx%d\n",__func__,f->fmt.pix.width,f->fmt.pix.height);
+
 	f->fmt.pix.width        = dev->width;
 	f->fmt.pix.height       = dev->height;
 	f->fmt.pix.field        = dev->vb_vidq.field;
@@ -1225,7 +1202,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 		width_buf = dev->width;
 		height_buf = dev->height;
 		break;
-	case CSI_CCIR656://TODO
+	case CSI_CCIR656:
 		width_len  = dev->width;
 		width_buf = dev->width*2;
 		height_buf = dev->height/2;
@@ -1235,7 +1212,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 		width_buf = dev->width*2;
 		height_buf = dev->height;
 		break;
-	case CSI_YUV422_16://TODO
+	case CSI_YUV422_16:
 		width_len  = dev->width;
 		width_buf = dev->width;
 		height_buf = dev->height;
@@ -1673,7 +1650,7 @@ static int csi_open(struct file *file)
 	  }
 	}
 	
-	dev->input=-1;//default input null
+	dev->input = -1;//default input null
 	dev->hstart = 0;
 	dev->vstart = 0;//h and v offset is initialed to zero
 	
@@ -1786,27 +1763,27 @@ static const struct v4l2_file_operations csi_fops = {
 };
 
 static const struct v4l2_ioctl_ops csi_ioctl_ops = {
-	.vidioc_querycap		= vidioc_querycap,
-	.vidioc_enum_fmt_vid_cap	= vidioc_enum_fmt_vid_cap,
+	.vidioc_querycap          = vidioc_querycap,
+	.vidioc_enum_fmt_vid_cap  = vidioc_enum_fmt_vid_cap,
 	.vidioc_enum_framesizes		= vidioc_enum_framesizes_cap,
 	.vidioc_enum_frameintervals	= vidioc_enum_frameintervals_cap,
-	.vidioc_g_fmt_vid_cap		= vidioc_g_fmt_vid_cap,
-	.vidioc_try_fmt_vid_cap		= vidioc_try_fmt_vid_cap,
-	.vidioc_s_fmt_vid_cap  		= vidioc_s_fmt_vid_cap,
-	.vidioc_reqbufs        		= vidioc_reqbufs,
-	.vidioc_querybuf		= vidioc_querybuf,
-	.vidioc_qbuf   			= vidioc_qbuf,
-	.vidioc_dqbuf   		= vidioc_dqbuf,
-	.vidioc_enum_input        	= vidioc_enum_input,
-	.vidioc_g_input 		= vidioc_g_input,
-	.vidioc_s_input 		= vidioc_s_input,
-	.vidioc_streamon		= vidioc_streamon,
-	.vidioc_streamoff         	= vidioc_streamoff,
-	.vidioc_queryctrl         	= vidioc_queryctrl,
-	.vidioc_g_ctrl  		= vidioc_g_ctrl,
-	.vidioc_s_ctrl  		= vidioc_s_ctrl,
-	.vidioc_g_parm			= vidioc_g_parm,
-	.vidioc_s_parm			= vidioc_s_parm,
+	.vidioc_g_fmt_vid_cap     = vidioc_g_fmt_vid_cap,
+	.vidioc_try_fmt_vid_cap   = vidioc_try_fmt_vid_cap,
+	.vidioc_s_fmt_vid_cap     = vidioc_s_fmt_vid_cap,
+	.vidioc_reqbufs           = vidioc_reqbufs,
+	.vidioc_querybuf          = vidioc_querybuf,
+	.vidioc_qbuf              = vidioc_qbuf,
+	.vidioc_dqbuf             = vidioc_dqbuf,
+	.vidioc_enum_input        = vidioc_enum_input,
+	.vidioc_g_input           = vidioc_g_input,
+	.vidioc_s_input           = vidioc_s_input,
+	.vidioc_streamon          = vidioc_streamon,
+	.vidioc_streamoff         = vidioc_streamoff,
+	.vidioc_queryctrl         = vidioc_queryctrl,
+	.vidioc_g_ctrl            = vidioc_g_ctrl,
+	.vidioc_s_ctrl            = vidioc_s_ctrl,
+	.vidioc_g_parm		 			  = vidioc_g_parm,
+	.vidioc_s_parm		  			= vidioc_s_parm,
 
 #ifdef CONFIG_VIDEO_V4L1_COMPAT
 	.vidiocgmbuf              = vidiocgmbuf,
