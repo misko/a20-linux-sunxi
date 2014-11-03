@@ -25,9 +25,6 @@
 #include <linux/log2.h>
 #include <linux/module.h>
 #include <linux/init.h>
-//#include <linux/of.h>
-//#include <linux/of_gpio.h>
-//#include <linux/of_graph.h>
 #include <linux/pm.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -45,10 +42,7 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
-#ifdef USE_PLL
-	#include <media/mt9p031.h>
-	#include "aptina-pll.h"
-#endif
+//#define SHOW_TEST_PATTERN
 //for internel driver debug
 #define DEV_DBG_EN   		1
 #if(DEV_DBG_EN == 1)
@@ -66,12 +60,14 @@
 #define IO_CFG		0						//0 for csi0
 
 //define the voltage level of control signal
-#define CSI_STBY_ON		1
-#define CSI_STBY_OFF 		0
+#define CSI_STBY_ON		0
+#define CSI_STBY_OFF 		1
 #define CSI_RST_ON		0
 #define CSI_RST_OFF		1
 #define CSI_PWR_ON		1
 #define CSI_PWR_OFF		0
+
+#define SENSOR_FRAME_RATE 30
 
 #define MT9P031_PIXEL_ARRAY_WIDTH                       2752
 #define MT9P031_PIXEL_ARRAY_HEIGHT                      2004
@@ -171,6 +167,7 @@ struct mt9p031 {
         struct media_pad pad;
         struct v4l2_rect crop;  /* Sensor window */
         struct v4l2_mbus_framefmt format;
+	struct sensor_format_struct *fmt;
 	__csi_subdev_info_t *ccm_info;
         struct mt9p031_platform_data *pdata;
         struct mutex power_lock; /* lock to protect power_count */
@@ -180,9 +177,6 @@ struct mt9p031 {
         struct regulator_bulk_data regulators[3];
 
         enum mt9p031_model model;
-#ifdef USE_PLL
-        struct aptina_pll pll;
-#endif
         unsigned int clk_div;
         int reset;
 
@@ -193,23 +187,24 @@ struct mt9p031 {
         /* Registers cache */
         u16 output_control;
         u16 mode2;
+	int hflip;
+	int vflip;
+	int gain;
+	int exp;
 };
 
 static struct mt9p031 *to_mt9p031(struct v4l2_subdev *sd)
 {
-	csi_dev_dbg("%s: called!\n",__func__);
         return container_of(sd, struct mt9p031, subdev);
 }
 
 static int mt9p031_read(struct i2c_client *client, u8 reg)
 {
-	csi_dev_dbg("%s: called!\n",__func__);
         return i2c_smbus_read_word_swapped(client, reg);
 }
 
 static int mt9p031_write(struct i2c_client *client, u8 reg, u16 data)
 {
-	csi_dev_dbg("%s: called!\n",__func__);
         return i2c_smbus_write_word_swapped(client, reg, data);
 }
 
@@ -218,9 +213,10 @@ static int mt9p031_set_output_control(struct mt9p031 *mt9p031, u16 clear,
 {
 	csi_dev_dbg("%s: called!\n",__func__);
         struct i2c_client *client = v4l2_get_subdevdata(&mt9p031->subdev);
+	csi_dev_dbg("%s: clear=0x%00x set=0x%00x\n",__func__, clear, set);
         u16 value = (mt9p031->output_control & ~clear) | set;
         int ret;
-
+	csi_dev_dbg("%s: MT9P031_OUTPUT_CONTROL (0x%x) value=0x%00x\n",__func__, MT9P031_OUTPUT_CONTROL, value);
         ret = mt9p031_write(client, MT9P031_OUTPUT_CONTROL, value);
         if (ret < 0)
                 return ret;
@@ -235,7 +231,7 @@ static int mt9p031_set_mode2(struct mt9p031 *mt9p031, u16 clear, u16 set)
         struct i2c_client *client = v4l2_get_subdevdata(&mt9p031->subdev);
         u16 value = (mt9p031->mode2 & ~clear) | set;
         int ret;
-
+	csi_dev_dbg("%s: clear=0x%00x set=0x%00x value=0x%00x\n",__func__, clear, set, value);
         ret = mt9p031_write(client, MT9P031_READ_MODE_2, value);
         if (ret < 0)
                 return ret;
@@ -251,13 +247,16 @@ static int mt9p031_reset(struct mt9p031 *mt9p031)
         int ret;
 
         /* Disable chip output, synchronous option update */
+	csi_dev_dbg("%s: set MT9P031_RST (0x%00x) val=0x%00x\n",__func__,MT9P031_RST, MT9P031_RST_ENABLE);
         ret = mt9p031_write(client, MT9P031_RST, MT9P031_RST_ENABLE);
         if (ret < 0)
                 return ret;
+	csi_dev_dbg("%s: set MT9P031_RST (0x%00x) val=0x%00x\n",__func__,MT9P031_RST, MT9P031_RST_DISABLE);
         ret = mt9p031_write(client, MT9P031_RST, MT9P031_RST_DISABLE);
         if (ret < 0)
                 return ret;
 
+	csi_dev_dbg("%s: set MT9P031_PIXEL_CLOCK_CONTROL (0x%00x) val=(1<<0x%00x)\n",__func__,MT9P031_PIXEL_CLOCK_CONTROL,mt9p031->clk_div);
         ret = mt9p031_write(client, MT9P031_PIXEL_CLOCK_CONTROL,
                             MT9P031_PIXEL_CLOCK_DIVIDE(mt9p031->clk_div));
         if (ret < 0)
@@ -266,49 +265,6 @@ static int mt9p031_reset(struct mt9p031 *mt9p031)
         return mt9p031_set_output_control(mt9p031, MT9P031_OUTPUT_CONTROL_CEN,
                                           0);
 }
-#ifdef USE_PLL
-static int mt9p031_pll_enable(struct mt9p031 *mt9p031)
-{
-	csi_dev_dbg("%s: called!\n",__func__);
-        struct i2c_client *client = v4l2_get_subdevdata(&mt9p031->subdev);
-        int ret;
-
-        if (!mt9p031->use_pll)
-                return 0;
-
-        ret = mt9p031_write(client, MT9P031_PLL_CONTROL,
-                           MT9P031_PLL_CONTROL_PWRON);
-       if (ret < 0)
-                return ret;
-
-        ret = mt9p031_write(client, MT9P031_PLL_CONFIG_1,
-                            (mt9p031->pll.m << 8) | (mt9p031->pll.n - 1));
-        if (ret < 0)
-                return ret;
-
-        ret = mt9p031_write(client, MT9P031_PLL_CONFIG_2, mt9p031->pll.p1 - 1);
-        if (ret < 0)
-                return ret;
-
-        usleep_range(1000, 2000);
-        ret = mt9p031_write(client, MT9P031_PLL_CONTROL,
-                            MT9P031_PLL_CONTROL_PWRON |
-                            MT9P031_PLL_CONTROL_USEPLL);
-        return ret;
-}
-
-static inline int mt9p031_pll_disable(struct mt9p031 *mt9p031)
-{
-	csi_dev_dbg("%s: called!\n",__func__);
-        struct i2c_client *client = v4l2_get_subdevdata(&mt9p031->subdev);
-
-        if (!mt9p031->use_pll)
-                return 0;
-
-        return mt9p031_write(client, MT9P031_PLL_CONTROL,
-                             MT9P031_PLL_CONTROL_PWROFF);
-}
-#endif
 /* -----------------------------------------------------------------------------
  * V4L2 subdev video operations
  */
@@ -333,15 +289,23 @@ static int mt9p031_set_params(struct mt9p031 *mt9p031)
          * skipping, binning and mirroring (see description of registers 2 and 4
          * in table 13, and Binning section on page 41).
          */
+	csi_dev_dbg("%s: set MT9P031_COLUMN_START (0x%00x) val=(%d) 0x%00x\n",
+			__func__,MT9P031_COLUMN_START,crop->left,crop->left);
         ret = mt9p031_write(client, MT9P031_COLUMN_START, crop->left);
         if (ret < 0)
                 return ret;
+	csi_dev_dbg("%s: set MT9P031_ROW_START (0x%00x) val=(%d) 0x%00x\n",
+			__func__,MT9P031_ROW_START,crop->top,crop->top);
         ret = mt9p031_write(client, MT9P031_ROW_START, crop->top);
         if (ret < 0)
                 return ret;
+	csi_dev_dbg("%s: set MT9P031_WINDOW_WIDTH (0x%00x) val=(%d) 0x%00x\n",
+			__func__,MT9P031_WINDOW_WIDTH,crop->width,crop->width);
         ret = mt9p031_write(client, MT9P031_WINDOW_WIDTH, crop->width - 1);
         if (ret < 0)
                 return ret;
+	csi_dev_dbg("%s: set MT9P031_WINDOW_HEIGHT (0x%00x) val=(%d) 0x%00x\n",
+			__func__,MT9P031_WINDOW_HEIGHT,crop->height,crop->height);
         ret = mt9p031_write(client, MT9P031_WINDOW_HEIGHT, crop->height - 1);
         if (ret < 0)
                 return ret;
@@ -354,10 +318,12 @@ static int mt9p031_set_params(struct mt9p031 *mt9p031)
         xbin = 1 << (ffs(xskip) - 1);
         ybin = 1 << (ffs(yskip) - 1);
 
+	csi_dev_dbg("%s: set MT9P031_COLUMN_ADDRESS_MODE (0x%00x) val=0x%00x\n",__func__,MT9P031_COLUMN_ADDRESS_MODE,((xbin - 1) << 4) | (xskip - 1));
         ret = mt9p031_write(client, MT9P031_COLUMN_ADDRESS_MODE,
                             ((xbin - 1) << 4) | (xskip - 1));
         if (ret < 0)
                 return ret;
+	csi_dev_dbg("%s: set MT9P031_ROW_ADDRESS_MODE (0x%00x) val=0x%00x\n",__func__,MT9P031_ROW_ADDRESS_MODE,((ybin - 1) << 4) | (yskip - 1));
         ret = mt9p031_write(client, MT9P031_ROW_ADDRESS_MODE,
                             ((ybin - 1) << 4) | (yskip - 1));
         if (ret < 0)
@@ -378,47 +344,12 @@ static int mt9p031_set_params(struct mt9p031 *mt9p031)
 
         return ret;
 }
-
-/*static int mt9p031_s_stream(struct v4l2_subdev *subdev, int enable)
-{
-        struct mt9p031 *mt9p031 = to_mt9p031(subdev);
-        int ret;
-
-        if (!enable) {
-                // Stop sensor readout
-                ret = mt9p031_set_output_control(mt9p031,
-                                                 MT9P031_OUTPUT_CONTROL_CEN, 0);
-                if (ret < 0)
-                        return ret;
-#ifdef USE_PLL
-                return mt9p031_pll_disable(mt9p031);
-#else
-		return 0;
-#endif
-        }
-
-        ret = mt9p031_set_params(mt9p031);
-        if (ret < 0)
-                return ret;
-
-        // Switch to master "normal" mode
-        ret = mt9p031_set_output_control(mt9p031, 0,
-                                         MT9P031_OUTPUT_CONTROL_CEN);
-        if (ret < 0)
-                return ret;
-#ifdef USE_PLL
-        return mt9p031_pll_enable(mt9p031);
-#else
-	return 0;
-#endif
-}
-*/
-static int mt9p031_enum_mbus_code(struct v4l2_subdev *subdev,
+static int mt9p031_enum_mbus_code(struct v4l2_subdev *sd,
                                   struct v4l2_subdev_fh *fh,
                                   struct v4l2_subdev_mbus_code_enum *code)
 {
 	csi_dev_dbg("%s: called!\n",__func__);
-        struct mt9p031 *mt9p031 = to_mt9p031(subdev);
+        struct mt9p031 *mt9p031 = to_mt9p031(sd);
 
         if (code->pad || code->index)
                 return -EINVAL;
@@ -426,13 +357,45 @@ static int mt9p031_enum_mbus_code(struct v4l2_subdev *subdev,
         code->code = mt9p031->format.code;
         return 0;
 }
+static int mt9p031_enum_fmt(struct v4l2_subdev *sd, unsigned index,
+                 enum v4l2_mbus_pixelcode *code)
+{
+	csi_dev_dbg("%s: called!\n",__func__);
+        struct mt9p031 *mt9p031 = to_mt9p031(sd);
 
-static int mt9p031_enum_frame_size(struct v4l2_subdev *subdev,
+        if (index)
+                return -EINVAL;
+
+        *code = mt9p031->format.code;
+        return 0;
+}
+
+static int mt9p031_enum_frame_size(struct v4l2_subdev *sd,
                                    struct v4l2_subdev_fh *fh,
                                    struct v4l2_subdev_frame_size_enum *fse)
 {
 	csi_dev_dbg("%s: called!\n",__func__);
-        struct mt9p031 *mt9p031 = to_mt9p031(subdev);
+        struct mt9p031 *mt9p031 = to_mt9p031(sd);
+
+        if (fse->index >= 8 /*|| fse->code != mt9p031->format.code*/)
+                return -EINVAL;
+
+        fse->min_width = MT9P031_WINDOW_WIDTH_DEF
+                       / min_t(unsigned int, 7, fse->index + 1);
+        fse->max_width = fse->min_width;
+        fse->min_height = MT9P031_WINDOW_HEIGHT_DEF / (fse->index + 1);
+        fse->max_height = fse->min_height;
+
+	csi_dev_dbg("%s: min_h=%d max_h=%d min_w=%d max_w=%d called!\n",
+			__func__,fse->min_height,fse->max_height,fse->min_width,fse->max_width);
+
+        return 0;
+}
+static int mt9p031_enum_framesize(struct v4l2_subdev *sd,
+                                   struct v4l2_subdev_frame_size_enum *fse)
+{
+	csi_dev_dbg("%s: called!\n",__func__);
+        struct mt9p031 *mt9p031 = to_mt9p031(sd);
 
         if (fse->index >= 8 || fse->code != mt9p031->format.code)
                 return -EINVAL;
@@ -445,7 +408,19 @@ static int mt9p031_enum_frame_size(struct v4l2_subdev *subdev,
 
         return 0;
 }
+static int mt9p031_frame_rates[] = { 30, 15, 10, 5, 1 };
 
+static int mt9p031_enum_intervals(struct v4l2_subdev *sd,
+		struct v4l2_frmivalenum *interval)
+{
+	csi_dev_dbg("%s: called!\n",__func__);
+	if (interval->index >= ARRAY_SIZE(mt9p031_frame_rates))
+		return -EINVAL;
+	interval->type = V4L2_FRMIVAL_TYPE_DISCRETE;
+	interval->discrete.numerator = 1;
+	interval->discrete.denominator = mt9p031_frame_rates[interval->index];
+	return 0;
+}
 static struct v4l2_mbus_framefmt *
 __mt9p031_get_pad_format(struct mt9p031 *mt9p031, struct v4l2_subdev_fh *fh,
                          unsigned int pad, u32 which)
@@ -598,7 +573,6 @@ static int mt9p031_set_crop(struct v4l2_subdev *subdev,
 static int sensor_queryctrl(struct v4l2_subdev *sd,
 		struct v4l2_queryctrl *qc)
 {
-	csi_dev_dbg("%s: called!\n",__func__);
 	/* Fill in min, max, step and default value for these controls. */
 	/* see include/linux/videodev2.h for details */
 	/* see sensor_s_parm and sensor_g_parm for the meaning of value */
@@ -626,26 +600,55 @@ static int sensor_queryctrl(struct v4l2_subdev *sd,
 	return -EINVAL;
 }
 
-static int mt9p031_s_ctrl(struct v4l2_subdev *sd, struct v4l2_ctrl *ctrl)
+static int mt9p031_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
 	csi_dev_dbg("%s: called!\n",__func__);
-        struct mt9p031 *mt9p031 =
-                        container_of(ctrl->handler, struct mt9p031, ctrls);
-        struct i2c_client *client = v4l2_get_subdevdata(&mt9p031->subdev);
+	struct mt9p031 *mt9p031 = container_of(sd, struct mt9p031, subdev);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	int ret=-1;
+	switch (ctrl->id) {
+	case V4L2_CID_VFLIP:
+		ctrl->value = (mt9p031->mode2>>15&1);
+		csi_dev_dbg("%s: V4L2_CID_VFLIP ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_HFLIP:
+		ctrl->value = (mt9p031->mode2>>14&1);
+		csi_dev_dbg("%s: V4L2_CID_HFLIP ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_GAIN:
+		ctrl->value = mt9p031_read(client, MT9P031_GLOBAL_GAIN);
+		csi_dev_dbg("%s: V4L2_CID_GAIN ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return ret;
+	case V4L2_CID_EXPOSURE:
+		ctrl->value = (mt9p031_read(client, MT9P031_SHUTTER_WIDTH_UPPER)<<16)+mt9p031_read(client, MT9P031_SHUTTER_WIDTH_LOWER);
+		csi_dev_dbg("%s: V4L2_CID_EXPOSURE ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	}
+	csi_dev_dbg("%s: no match for control 0x%00X\n",__func__, ctrl->id);
+	return -EINVAL;
+}
+static int mt9p031_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
+{
+	csi_dev_dbg("%s: called!\n",__func__);
+        struct mt9p031 *mt9p031 = container_of(sd, struct mt9p031, subdev);//container_of(ctrl->handler, struct mt9p031, ctrls);
+        //struct i2c_client *client = v4l2_get_subdevdata(&mt9p031->subdev);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
         u16 data;
-        int ret;
+        int ret=-1;
 
         switch (ctrl->id) {
         case V4L2_CID_EXPOSURE:
+		csi_dev_dbg("%s: V4L2_CID_EXPOSURE 0x%00x\n",__func__,ctrl->value);
                 ret = mt9p031_write(client, MT9P031_SHUTTER_WIDTH_UPPER,
-                                    (ctrl->val >> 16) & 0xffff);
+                                    (ctrl->value >> 16) & 0xffff);
                 if (ret < 0)
                         return ret;
 
                 return mt9p031_write(client, MT9P031_SHUTTER_WIDTH_LOWER,
-                                     ctrl->val & 0xffff);
+                                     ctrl->value & 0xffff);
 
         case V4L2_CID_GAIN:
+		csi_dev_dbg("%s: V4L2_CID_GAIN 0x%00x\n",__func__,ctrl->value);
                 /* Gain is controlled by 2 analog stages and a digital stage.
                  * Valid values for the 3 stages are
                  *
@@ -660,44 +663,50 @@ static int mt9p031_s_ctrl(struct v4l2_subdev *sd, struct v4l2_ctrl *ctrl)
                  * Gain from a previous stage should be pushed to its maximum
                  * value before the next stage is used.
                  */
-                if (ctrl->val <= 32) {
-                        data = ctrl->val;
-                } else if (ctrl->val <= 64) {
-                        ctrl->val &= ~1;
-                        data = (1 << 6) | (ctrl->val >> 1);
+                if (ctrl->value <= 32) {
+                        data = ctrl->value;
+                } else if (ctrl->value <= 64) {
+                        ctrl->value &= ~1;
+                        data = (1 << 6) | (ctrl->value >> 1);
                 } else {
-                        ctrl->val &= ~7;
-                        data = ((ctrl->val - 64) << 5) | (1 << 6) | 32;
+                        ctrl->value &= ~7;
+                        data = ((ctrl->value - 64) << 5) | (1 << 6) | 32;
                 }
-
+		csi_dev_dbg("%s: V4L2_CID_GAIN 0x%00x\n",__func__, data);
                 return mt9p031_write(client, MT9P031_GLOBAL_GAIN, data);
 
         case V4L2_CID_HFLIP:
-                if (ctrl->val)
-                        return mt9p031_set_mode2(mt9p031,
+		csi_dev_dbg("%s: V4L2_CID_HFLIP 0x%00x\n",__func__,ctrl->value);
+                if (ctrl->value)
+                        ret = mt9p031_set_mode2(mt9p031,
                                         0, MT9P031_READ_MODE_2_COL_MIR);
                 else
-                        return mt9p031_set_mode2(mt9p031,
+                        ret = mt9p031_set_mode2(mt9p031,
                                         MT9P031_READ_MODE_2_COL_MIR, 0);
+		csi_dev_dbg("%s: V4L2_CID_HFLIP ret=0x%00x\n",__func__, ret);
+		return ret;
 
         case V4L2_CID_VFLIP:
-                if (ctrl->val)
-                        return mt9p031_set_mode2(mt9p031,
+		csi_dev_dbg("%s: V4L2_CID_VFLIP 0x%00x\n",__func__,ctrl->value);
+                if (ctrl->value)
+                        ret = mt9p031_set_mode2(mt9p031,
                                         0, MT9P031_READ_MODE_2_ROW_MIR);
                 else
-                        return mt9p031_set_mode2(mt9p031,
+                        ret = mt9p031_set_mode2(mt9p031,
                                         MT9P031_READ_MODE_2_ROW_MIR, 0);
+		csi_dev_dbg("%s: V4L2_CID_HFLIP ret=0x%00x\n",__func__, ret);
+		return ret;
 
-        /*case V4L2_CID_TEST_PATTERN:
-                if (!ctrl->val) {
+        case V4L2_CID_TEST_PATTERN:
+                if (!ctrl->value) {
                         // Restore the black level compensation settings.
                         if (mt9p031->blc_auto->cur.val != 0) {
-                                ret = mt9p031_s_ctrl(mt9p031->blc_auto);
+                                ret = mt9p031_s_ctrl(sd, mt9p031->blc_auto);
                                 if (ret < 0)
                                         return ret;
                         }
                         if (mt9p031->blc_offset->cur.val != 0) {
-                                ret = mt9p031_s_ctrl(mt9p031->blc_offset);
+                                ret = mt9p031_s_ctrl(sd, mt9p031->blc_offset);
                                 if (ret < 0)
                                         return ret;
                         }
@@ -728,25 +737,27 @@ static int mt9p031_s_ctrl(struct v4l2_subdev *sd, struct v4l2_ctrl *ctrl)
                         return ret;
 
                 return mt9p031_write(client, MT9P031_TEST_PATTERN,
-                                ((ctrl->val - 1) << MT9P031_TEST_PATTERN_SHIFT)
+                                ((ctrl->value - 1) << MT9P031_TEST_PATTERN_SHIFT)
                                 | MT9P031_TEST_PATTERN_ENABLE);
-	*/
         case V4L2_CID_BLC_AUTO:
+		csi_dev_dbg("%s: V4L2_CID_BLC_AUTO\n",__func__);
                 ret = mt9p031_set_mode2(mt9p031,
-                                ctrl->val ? 0 : MT9P031_READ_MODE_2_ROW_BLC,
-                                ctrl->val ? MT9P031_READ_MODE_2_ROW_BLC : 0);
+                                ctrl->value ? 0 : MT9P031_READ_MODE_2_ROW_BLC,
+                                ctrl->value ? MT9P031_READ_MODE_2_ROW_BLC : 0);
                 if (ret < 0)
                         return ret;
 
                 return mt9p031_write(client, MT9P031_BLACK_LEVEL_CALIBRATION,
-                                     ctrl->val ? 0 : MT9P031_BLC_MANUAL_BLC);
+                                     ctrl->value ? 0 : MT9P031_BLC_MANUAL_BLC);
 
         case V4L2_CID_BLC_TARGET_LEVEL:
+		csi_dev_dbg("%s: V4L2_CID_BLC_TARGET_LEVEL\n",__func__);
                 return mt9p031_write(client, MT9P031_ROW_BLACK_TARGET,
-                                     ctrl->val);
+                                     ctrl->value);
 
         case V4L2_CID_BLC_ANALOG_OFFSET:
-                data = ctrl->val & ((1 << 9) - 1);
+		csi_dev_dbg("%s: V4L2_CID_BLC_ANALOG_OFFSET\n",__func__);
+                data = ctrl->value & ((1 << 9) - 1);
 
                 ret = mt9p031_write(client, MT9P031_GREEN1_OFFSET, data);
                 if (ret < 0)
@@ -760,17 +771,99 @@ static int mt9p031_s_ctrl(struct v4l2_subdev *sd, struct v4l2_ctrl *ctrl)
                 return mt9p031_write(client, MT9P031_BLUE_OFFSET, data);
 
         case V4L2_CID_BLC_DIGITAL_OFFSET:
+		csi_dev_dbg("%s: V4L2_CID_BLC_DIGITAL_OFFSET\n",__func__);
                 return mt9p031_write(client, MT9P031_ROW_BLACK_DEF_OFFSET,
-                                     ctrl->val & ((1 << 12) - 1));
+                                     ctrl->value & ((1 << 12) - 1));
         }
+	csi_dev_dbg("%s: no match for control 0x%00X\n",__func__, ctrl->id);
+        return -EINVAL;
+}
+static int sensor_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+{
+	struct v4l2_captureparm *cp = &parms->parm.capture;
+	struct mt9p031 *info = to_mt9p031(sd);
 
-        return 0;
+	if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
+	memset(cp, 0, sizeof(struct v4l2_captureparm));
+	cp->capability = V4L2_CAP_TIMEPERFRAME;
+	cp->timeperframe.numerator = 1;
+
+	if (info->format.width > 1280 && info->format.height > 720) {
+		cp->timeperframe.denominator = SENSOR_FRAME_RATE/2;
+	}
+	else {
+		cp->timeperframe.denominator = SENSOR_FRAME_RATE;
+	}
+
+	return 0;
 }
 
-
-static struct v4l2_ctrl_ops mt9p031_ctrl_ops = {
-        .s_ctrl = mt9p031_s_ctrl,
+static int sensor_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+{
+	return 0;
+}
+static struct sensor_format_struct {
+	__u8 *desc;
+	enum v4l2_mbus_pixelcode mbus_code;
+	int bpp;
+} sensor_formats[] = {
+	{
+		.desc		= "SBGGR12_1X12",
+		.mbus_code	= V4L2_MBUS_FMT_SBGGR12_1X12, //V4L2_MBUS_FMT_SBGGR8_1X8,
+		.bpp		= 2,
+	}
 };
+static int sensor_try_fmt_internal(struct v4l2_subdev *sd,
+		struct v4l2_mbus_framefmt *fmt,
+		struct sensor_format_struct **ret_fmt,
+		struct sensor_win_size **ret_wsize)
+{
+	csi_dev_dbg("%s: called!\n",__func__);
+	struct mt9p031 *info = to_mt9p031(sd);
+
+	if (ret_fmt != NULL)
+		*ret_fmt = sensor_formats;
+	csi_dev_dbg("%s: called!\n",__func__);
+	fmt->field = V4L2_FIELD_NONE;
+	csi_dev_dbg("%s: called!\n",__func__);
+	if(fmt->width%2!=0)
+		fmt->width++;
+	if(fmt->height%2!=0)
+		fmt->height++;
+	csi_dev_dbg("%s: req size %dx%d\n",__func__, fmt->width,fmt->height);
+	if(fmt->width<MT9P031_WINDOW_WIDTH_MIN)
+		fmt->width=MT9P031_WINDOW_WIDTH_MIN;
+	if(fmt->width>MT9P031_WINDOW_WIDTH_MAX)
+		fmt->width=MT9P031_WINDOW_WIDTH_MAX;
+	if(fmt->height<MT9P031_WINDOW_HEIGHT_MIN)
+		fmt->height=MT9P031_WINDOW_HEIGHT_MIN;
+	if(fmt->height>MT9P031_WINDOW_HEIGHT_MAX)
+		fmt->height=MT9P031_WINDOW_HEIGHT_MAX;
+
+	info->crop.height=fmt->height;
+	info->crop.width=fmt->width;
+	info->format.height=fmt->height;
+	info->format.width=fmt->width;
+	csi_dev_dbg("%s: got size %dx%d\n",__func__, fmt->width,fmt->height);
+	return 0;
+}
+
+static int sensor_try_fmt(struct v4l2_subdev *sd,
+             struct v4l2_mbus_framefmt *fmt)
+{
+	return sensor_try_fmt_internal(sd, fmt, NULL, NULL);
+}
+static int sensor_s_fmt(struct v4l2_subdev *sd,
+             struct v4l2_mbus_framefmt *fmt)
+{
+	return sensor_try_fmt_internal(sd, fmt, NULL, NULL);
+}
+
+/*static struct v4l2_ctrl_ops mt9p031_ctrl_ops = {
+        .s_ctrl = mt9p031_s_ctrl,
+};*/
 
 static const char * const mt9p031_test_pattern_menu[] = {
         "Disabled",
@@ -783,50 +876,6 @@ static const char * const mt9p031_test_pattern_menu[] = {
         "Monochrome Horizontal Bars",
         "Monochrome Vertical Bars",
         "Vertical Color Bars",
-};
-
-static const struct v4l2_ctrl_config mt9p031_ctrls[] = {
-        {
-                .ops            = &mt9p031_ctrl_ops,
-                .id             = V4L2_CID_BLC_AUTO,
-                .type           = V4L2_CTRL_TYPE_BOOLEAN,
-                .name           = "BLC, Auto",
-                .min            = 0,
-                .max            = 1,
-                .step           = 1,
-                .def            = 1,
-                .flags          = 0,
-        }, {
-                .ops            = &mt9p031_ctrl_ops,
-                .id             = V4L2_CID_BLC_TARGET_LEVEL,
-                .type           = V4L2_CTRL_TYPE_INTEGER,
-                .name           = "BLC Target Level",
-                .min            = 0,
-                .max            = 4095,
-                .step           = 1,
-                .def            = 168,
-                .flags          = 0,
-        }, {
-                .ops            = &mt9p031_ctrl_ops,
-                .id             = V4L2_CID_BLC_ANALOG_OFFSET,
-                .type           = V4L2_CTRL_TYPE_INTEGER,
-                .name           = "BLC Analog Offset",
-                .min            = -255,
-                .max            = 255,
-                .step           = 1,
-                .def            = 32,
-                .flags          = 0,
-        }, {
-                .ops            = &mt9p031_ctrl_ops,
-                .id             = V4L2_CID_BLC_DIGITAL_OFFSET,
-                .type           = V4L2_CTRL_TYPE_INTEGER,
-                .name           = "BLC Digital Offset",
-                .min            = -2048,
-                .max            = 2047,
-                .step           = 1,
-                .def            = 40,
-                .flags          = 0,
-        }
 };
 
 /* -----------------------------------------------------------------------------
@@ -891,6 +940,45 @@ static int mt9p031_set_power(struct v4l2_subdev *subdev, int on)
 			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_reset_str);
 			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_OFF,csi_stby_str);
 			msleep(10);
+
+			/*msleep(100);
+			ret = mt9p031_reset(info);
+        		if (ret < 0){
+				csi_dev_err("mt9p031_reset failed!\n");
+                		return ret;
+			}
+
+        		ret = mt9p031_set_params(info);
+        		if (ret < 0){
+				csi_dev_err("mt9p031_set_params failed!\n");
+                		return ret;
+			}*/
+
+        		/* Switch to master "normal" mode */
+        		/*ret = mt9p031_set_output_control(info, 0,
+                                         MT9P031_OUTPUT_CONTROL_CEN);
+        		if (ret < 0){
+				csi_dev_err("%s: set_output_control failed!\n",__func__);
+                		return ret;
+			}*/
+
+			//enable pll
+			/*struct i2c_client *client = v4l2_get_subdevdata(&info->subdev);
+        		ret = mt9p031_write(client, MT9P031_PLL_CONTROL,
+                            		MT9P031_PLL_CONTROL_PWRON);
+        		if (ret < 0){
+				csi_dev_err("%s: set_pll_enabled failed!\n",__func__);
+                		return ret;
+			}*/
+
+
+#ifdef SHOW_TEST_PATTERN
+			struct i2c_client *client = v4l2_get_subdevdata(subdev);
+                        mt9p031_write(client, MT9P031_TEST_PATTERN,MT9P031_TEST_PATTERN_ENABLE);
+                        mt9p031_write(client, MT9P031_TEST_PATTERN_GREEN, 0x05a0);
+                	mt9p031_write(client, MT9P031_TEST_PATTERN_RED, 0x0a50);
+		        mt9p031_write(client, MT9P031_TEST_PATTERN_BLUE, 0x0aa0);
+#endif
 			break;
 		case CSI_SUBDEV_PWR_ON:
 			csi_dev_dbg("CSI_SUBDEV_PWR_ON\n");
@@ -928,6 +1016,7 @@ static int mt9p031_set_power(struct v4l2_subdev *subdev, int on)
 			msleep(100);
 			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_OFF,csi_stby_str);
 			msleep(10);
+			//mt9p031_reset(info);
 			break;
 
 		case CSI_SUBDEV_PWR_OFF:
@@ -1079,18 +1168,18 @@ static int mt9p031_registered(struct v4l2_subdev *subdev)
                 return ret;
         }
 
+
         /* Read out the chip version register */
         data = mt9p031_read(client, MT9P031_CHIP_VERSION);
-        //mt9p031_set_power(subdev, CSI_SUBDEV_PWR_OFF); //mt9p031_power_off(mt9p031);
 
         if (data != MT9P031_CHIP_VERSION_VALUE) {
-                dev_err(&client->dev, "MT9P031 not detected, wrong version "
-                        "0x%04x\n", data);
+                dev_err(&client->dev, "%s: CSI MT9P031 not detected, wrong version "
+                        "0x%04x\n", __func__, data);
                 return -ENODEV;
         }
 
-        dev_info(&client->dev, "MT9P031 detected at address 0x%02x\n",
-                 client->addr);
+        dev_info(&client->dev, "%s: CSI MT9P031 camera detected at address 0x%02x\n",
+        		__func__, client->addr);
 
         return 0;
 }
@@ -1133,24 +1222,24 @@ static struct v4l2_subdev_core_ops mt9p031_subdev_core_ops = {
         .s_power        = mt9p031_set_power,
 
 	.g_chip_ident	= sensor_g_chip_ident,
-	//.g_ctrl 	= mt9p031_g_ctrl, //sensor_g_ctrl,
-	.s_ctrl 	= mt9p031_s_ctrl, //sensor_s_ctrl,
+	.g_ctrl 	= mt9p031_g_ctrl,
+	.s_ctrl 	= mt9p031_s_ctrl,
 	.queryctrl 	= sensor_queryctrl,
 	.reset 		= sensor_reset,
-	//.init		= sensor_init,
+	.init		= mt9p031_registered, //sensor_init,
 	.ioctl		= sensor_ioctl,
 };
 
 static struct v4l2_subdev_video_ops mt9p031_subdev_video_ops = {
-        //.s_stream       = mt9p031_s_stream,
-
-	.enum_mbus_fmt		= mt9p031_enum_mbus_code,
-	//.enum_framesizes	= sensor_enum_size,
-	//.enum_frameintervals	= sensor_enum_intervals,
-	//.try_mbus_fmt		= sensor_try_fmt,
-	//.s_mbus_fmt		= sensor_s_fmt,
-	//.s_parm 		= sensor_s_parm,
-	//.g_parm		= sensor_g_parm,
+	.enum_mbus_fmt		= mt9p031_enum_fmt,
+	.enum_framesizes	= mt9p031_enum_framesize,
+	.enum_frameintervals	= mt9p031_enum_intervals,
+	.g_crop			= mt9p031_get_crop,
+	.s_crop			= mt9p031_set_crop,
+	.try_mbus_fmt		= sensor_try_fmt,
+	.s_mbus_fmt		= sensor_s_fmt,
+	.s_parm 		= sensor_s_parm,
+	.g_parm		= sensor_g_parm,
 };
 
 static struct v4l2_subdev_pad_ops mt9p031_subdev_pad_ops = {
@@ -1165,45 +1254,11 @@ static struct v4l2_subdev_pad_ops mt9p031_subdev_pad_ops = {
 static struct v4l2_subdev_ops mt9p031_subdev_ops = {
         .core   = &mt9p031_subdev_core_ops,
         .video  = &mt9p031_subdev_video_ops,
-        .pad    = &mt9p031_subdev_pad_ops,
-};
-
-static const struct v4l2_subdev_internal_ops mt9p031_subdev_internal_ops = {
-        .registered = mt9p031_registered,
-        .open = mt9p031_open,
-        .close = mt9p031_close,
 };
 
 /* -----------------------------------------------------------------------------
  * Driver initialization and probing
  */
-/*
-static struct mt9p031_platform_data *
-mt9p031_get_pdata(struct i2c_client *client)
-{
-        struct mt9p031_platform_data *pdata;
-        struct device_node *np;
-
-        if (!IS_ENABLED(CONFIG_OF) || !client->dev.of_node)
-                return client->dev.platform_data;
-
-        np = of_graph_get_next_endpoint(client->dev.of_node, NULL);
-        if (!np)
-                return NULL;
-
-        pdata = devm_kzalloc(&client->dev, sizeof(*pdata), GFP_KERNEL);
-        if (!pdata)
-                goto done;
-
-        pdata->reset = of_get_named_gpio(client->dev.of_node, "reset-gpios", 0);
-        of_property_read_u32(np, "input-clock-frequency", &pdata->ext_freq);
-        of_property_read_u32(np, "pixel-clock-frequency", &pdata->target_freq);
-
-done:
-        of_node_put(np);
-        return pdata;
-}
-*/
 static int mt9p031_probe(struct i2c_client *client,
                          const struct i2c_device_id *did)
 {
@@ -1213,11 +1268,6 @@ static int mt9p031_probe(struct i2c_client *client,
         struct mt9p031 *mt9p031;
         unsigned int i;
         int ret;
-
-        /*if (pdata == NULL) {
-                dev_err(&client->dev, "No platform data\n");
-                return -EINVAL;
-        }*/
 
         if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_WORD_DATA)) {
                 dev_warn(&client->dev,
@@ -1229,63 +1279,16 @@ static int mt9p031_probe(struct i2c_client *client,
         if (mt9p031 == NULL)
                 return -ENOMEM;
 
+	mt9p031->fmt = &sensor_formats[0];
 	mt9p031->ccm_info = &ccm_info_con;
-        //mt9p031->pdata = pdata;
         mt9p031->output_control = MT9P031_OUTPUT_CONTROL_DEF;
         mt9p031->mode2 = MT9P031_READ_MODE_2_ROW_BLC;
         mt9p031->model = did->driver_data;
         mt9p031->reset = -1;
 
-        mt9p031->regulators[0].supply = "vdd";
-        mt9p031->regulators[1].supply = "vdd_io";
-        mt9p031->regulators[2].supply = "vaa";
-
-        /*ret = devm_regulator_bulk_get(&client->dev, 3, mt9p031->regulators);
-        if (ret < 0) {
-                dev_err(&client->dev, "Unable to get regulators\n");
-                return ret;
-        }*/
-
-        v4l2_ctrl_handler_init(&mt9p031->ctrls, ARRAY_SIZE(mt9p031_ctrls) + 6);
-
-        v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
-                          V4L2_CID_EXPOSURE, MT9P031_SHUTTER_WIDTH_MIN,
-                          MT9P031_SHUTTER_WIDTH_MAX, 1,
-                          MT9P031_SHUTTER_WIDTH_DEF);
-        v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
-                          V4L2_CID_GAIN, MT9P031_GLOBAL_GAIN_MIN,
-                          MT9P031_GLOBAL_GAIN_MAX, 1, MT9P031_GLOBAL_GAIN_DEF);
-        v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
-                          V4L2_CID_HFLIP, 0, 1, 1, 0);
-        v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
-                          V4L2_CID_VFLIP, 0, 1, 1, 0);
-        /*v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
-                          V4L2_CID_PIXEL_RATE, pdata->target_freq,
-                          pdata->target_freq, 1, pdata->target_freq);*/
-        /*v4l2_ctrl_new_std_menu_items(&mt9p031->ctrls, &mt9p031_ctrl_ops,
-                          V4L2_CID_TEST_PATTERN,
-                          ARRAY_SIZE(mt9p031_test_pattern_menu) - 1, 0,
-                          0, mt9p031_test_pattern_menu);*/
-
-        for (i = 0; i < ARRAY_SIZE(mt9p031_ctrls); ++i)
-                v4l2_ctrl_new_custom(&mt9p031->ctrls, &mt9p031_ctrls[i], NULL);
-
-        mt9p031->subdev.ctrl_handler = &mt9p031->ctrls;
-
-        if (mt9p031->ctrls.error) {
-                printk(KERN_INFO "%s: control initialization error %d\n",
-                       __func__, mt9p031->ctrls.error);
-                ret = mt9p031->ctrls.error;
-                goto done;
-        }
-
-        mt9p031->blc_auto = v4l2_ctrl_find(&mt9p031->ctrls, V4L2_CID_BLC_AUTO);
-        mt9p031->blc_offset = v4l2_ctrl_find(&mt9p031->ctrls,
-                                             V4L2_CID_BLC_DIGITAL_OFFSET);
-
         mutex_init(&mt9p031->power_lock);
         v4l2_i2c_subdev_init(&mt9p031->subdev, client, &mt9p031_subdev_ops);
-        mt9p031->subdev.internal_ops = &mt9p031_subdev_internal_ops;
+        //mt9p031->subdev.internal_ops = &mt9p031_subdev_internal_ops;
 
         mt9p031->pad.flags = MEDIA_PAD_FL_SOURCE;
         ret = media_entity_init(&mt9p031->subdev.entity, 1, &mt9p031->pad, 0);
@@ -1299,26 +1302,19 @@ static int mt9p031_probe(struct i2c_client *client,
         mt9p031->crop.left = MT9P031_COLUMN_START_DEF;
         mt9p031->crop.top = MT9P031_ROW_START_DEF;
 
-        if (mt9p031->model == MT9P031_MODEL_MONOCHROME)
+        if (mt9p031->model == MT9P031_MODEL_MONOCHROME){
+		csi_dev_dbg("Camera model is MT9P031_MODEL_MONOCHROME\n");
                 mt9p031->format.code = V4L2_MBUS_FMT_Y12_1X12;
-        else
+	}
+        else{
+		csi_dev_dbg("Camera model is MT9P031_MODEL_COLOR\n");
                 mt9p031->format.code = V4L2_MBUS_FMT_SGRBG12_1X12;
+	}
 
         mt9p031->format.width = MT9P031_WINDOW_WIDTH_DEF;
         mt9p031->format.height = MT9P031_WINDOW_HEIGHT_DEF;
         mt9p031->format.field = V4L2_FIELD_NONE;
         mt9p031->format.colorspace = V4L2_COLORSPACE_SRGB;
-
-        /*if (gpio_is_valid(pdata->reset)) {
-                ret = devm_gpio_request_one(&client->dev, pdata->reset,
-                                            GPIOF_OUT_INIT_LOW, "mt9p031_rst");
-                if (ret < 0)
-                        goto done;
-
-                mt9p031->reset = pdata->reset;
-        }*/
-
-        //ret = mt9p031_clk_setup(mt9p031);
 
 done:
         if (ret < 0) {

@@ -49,7 +49,7 @@ MODULE_DESCRIPTION("A low-level driver for OV ov5642 sensors");
 MODULE_LICENSE("GPL");
 
 //for internel driver debug
-#define DEV_DBG_EN   		0
+#define DEV_DBG_EN   		1
 #if(DEV_DBG_EN == 1)
 #define csi_dev_dbg(x,arg...) printk(KERN_INFO"[CSI_DEBUG][OV5642]"x,##arg)
 #else
@@ -1193,9 +1193,7 @@ static int sensor_write_array(struct v4l2_subdev *sd, struct regval_list *vals ,
 	for(i = 0; i < size ; i++)
 	{
 		if(vals->reg_num[0] == 0xff && vals->reg_num[1] == 0xff) {
-			//csi_dev_dbg("%s: msleep %d\n", __func__,vals->value[0] * 256 + vals->value[1]);
 			//msleep(*(vals->value));
-			//csi_dev_dbg("%s: wake!\n", __func__);
 		}
 		else {
 			unsigned char *val=vals->value;
@@ -1203,15 +1201,13 @@ static int sensor_write_array(struct v4l2_subdev *sd, struct regval_list *vals ,
 			if(info->width<320 || info->height<240) {info->width=640; info->height=480; info->clkrc=2;}
 			switch(reg){
 				case 0x3011: //fps
-					if(info->clkrc==2)
+					if(info->clkrc<=2)
 						*val=0x08;
-					else if(info->clkrc==4)
-						*val=0x11;
 					else
-						*val=0x10;
+						*val=0x09;
 					printk("%s: write reg=0x%x pclk val=0x%x\n", __func__, reg, *val);
 					break;
-				case REG_OUT_WIDTH_HIGH: //width high
+				/*case REG_OUT_WIDTH_HIGH: //width high
 					*val=((info->width>>8)&0xFF);
 					csi_dev_dbg("%s: write reg=0x%x width(%d) high val=0x%x\n", __func__, reg, info->width, *val);
 					break;
@@ -1226,7 +1222,7 @@ static int sensor_write_array(struct v4l2_subdev *sd, struct regval_list *vals ,
 				case REG_OUT_HEIGHT_LOW: // height low
 					*val=(info->height&0xFF);
 					csi_dev_dbg("%s: write reg=0x%x height(%d) low val=0x%x\n", __func__, reg, info->height, *val);
-					break;
+					break;*/
 				case REG_PIXFMT:
 					*val=info->fmt->reg;
 					csi_dev_dbg("%s: write reg=0x%x pix_fmt val=0x%x\n", __func__, reg, *val);					
@@ -2059,8 +2055,8 @@ static int sensor_queryctrl(struct v4l2_subdev *sd,
 	/* see sensor_s_parm and sensor_g_parm for the meaning of value */
 
 	switch (qc->id) {
-	case V4L2_CID_BRIGHTNESS:
-		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);
+	/*case V4L2_CID_BRIGHTNESS:
+		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);*/
 //	case V4L2_CID_CONTRAST:
 //		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);
 //	case V4L2_CID_SATURATION:
@@ -2079,7 +2075,7 @@ static int sensor_queryctrl(struct v4l2_subdev *sd,
 	case V4L2_CID_EXPOSURE_AUTO:
 		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
 	case V4L2_CID_DO_WHITE_BALANCE:
-		return v4l2_ctrl_query_fill(qc, 0, 5, 1, 0);
+		return v4l2_ctrl_query_fill(qc, 1, 4, 1, 0);
 	case V4L2_CID_AUTO_WHITE_BALANCE:
 		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 1);
 	/*case V4L2_CID_COLORFX:
@@ -2107,7 +2103,7 @@ static int sensor_g_hflip(struct v4l2_subdev *sd, __s32 *value)
 	//regs.value[0] &= (1<<1);
 
 	*value = (regs.value[0]>>6)&1;
-
+	csi_dev_dbg("%s: value=0x%x\n", __func__,*value);
 	info->hflip = *value;
 	return 0;
 }
@@ -2136,7 +2132,7 @@ static int sensor_s_hflip(struct v4l2_subdev *sd, int value)
 		default:
 			return -EINVAL;
 	}
-
+	csi_dev_dbg("%s: value=0x%x\n", __func__,regs.value);
 	ret = sensor_write(sd, regs.reg_num, regs.value);
 	if (ret < 0) {
 		csi_dev_err("sensor_write err at sensor_s_hflip!\n");

@@ -32,7 +32,7 @@ MODULE_DESCRIPTION("A low-level driver for OmniVision ov7670 sensors");
 MODULE_LICENSE("GPL");
 
 //for internel driver debug
-#define DEV_DBG_EN   		0
+#define DEV_DBG_EN   		1
 #if(DEV_DBG_EN == 1)
 #define csi_dev_dbg(x,arg...) printk(KERN_INFO"[CSI_DEBUG][OV7670]"x,##arg)
 #else
@@ -590,6 +590,7 @@ static int ov7670_write(struct v4l2_subdev *sd, unsigned char reg,
  */
 static int ov7670_write_array(struct v4l2_subdev *sd, struct regval_list *vals)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	while (vals->reg_num != 0xff || vals->value != 0xff) {
 		int ret = ov7670_write(sd, vals->reg_num, vals->value);
 		if (ret < 0)
@@ -606,6 +607,7 @@ static int ov7670_write_array(struct v4l2_subdev *sd, struct regval_list *vals)
 
 static int ov7670_power(struct v4l2_subdev *sd, int on)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct csi_dev *dev=(struct csi_dev *)dev_get_drvdata(sd->v4l2_dev->dev);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct ov7670_info *info = to_state(sd);
@@ -678,14 +680,17 @@ static int ov7670_power(struct v4l2_subdev *sd, int on)
 			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_PWR_ON,csi_power_str);
 			msleep(10);
 			if(dev->dvdd) {
+				csi_dev_dbg("regulator_enable dvdd\n");
 				regulator_enable(dev->dvdd);
 				msleep(10);
 			}
 			if(dev->avdd) {
+				csi_dev_dbg("regulator_enable avdd\n");
 				regulator_enable(dev->avdd);
 				msleep(10);
 			}
 			if(dev->iovdd) {
+				csi_dev_dbg("regulator_enable iovdd\n");
 				regulator_enable(dev->iovdd);
 				msleep(10);
 			}
@@ -739,6 +744,7 @@ static int ov7670_power(struct v4l2_subdev *sd, int on)
 
 static int ov7670_reset(struct v4l2_subdev *sd, u32 val)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct csi_dev *dev=(struct csi_dev *)dev_get_drvdata(sd->v4l2_dev->dev);
 	struct ov7670_info *info = to_state(sd);
 	char csi_reset_str[32];
@@ -781,6 +787,7 @@ static int ov7670_reset(struct v4l2_subdev *sd, u32 val)
 
 static int ov7670_detect(struct v4l2_subdev *sd)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	unsigned char v;
 	int ret;
 
@@ -815,6 +822,7 @@ static int ov7670_detect(struct v4l2_subdev *sd)
 
 static int ov7670_init(struct v4l2_subdev *sd, u32 val)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	int ret;
 	csi_dev_dbg("ov7670_init\n");
 
@@ -829,6 +837,7 @@ static int ov7670_init(struct v4l2_subdev *sd, u32 val)
 
 static long sensor_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	int ret=0;
 
 	switch(cmd){
@@ -1021,6 +1030,7 @@ static struct ov7670_win_size {
 static int ov7670_set_hw(struct v4l2_subdev *sd, int hstart, int hstop,
 		int vstart, int vstop)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	int ret;
 	unsigned char v;
 /*
@@ -1050,6 +1060,7 @@ static int ov7670_set_hw(struct v4l2_subdev *sd, int hstart, int hstop,
 static int ov7670_enum_fmt(struct v4l2_subdev *sd, unsigned index,
                  enum v4l2_mbus_pixelcode *code)//linux-3.0
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 //	struct ov7670_format_struct *ofmt;
 
 	if (index >= N_OV7670_FMTS)//linux-3.0
@@ -1063,38 +1074,22 @@ static int ov7670_enum_fmt(struct v4l2_subdev *sd, unsigned index,
 //	fmt->pixelformat = ofmt->pixelformat;
 	return 0;
 }
-static int sensor_enum_intervals(struct v4l2_subdev *sd, struct v4l2_frmivalenum *ivalnum)
+static int ov7670_frame_rates[] = { 30, 15, 10, 5, 1 };
+
+static int sensor_enum_intervals(struct v4l2_subdev *sd,
+		struct v4l2_frmivalenum *interval)
 {
-
-	//printk("\n\n\nenum_intervals! index=%d %dx%d code=%d\n\n\n\n",ivalnum->index, ivalnum->width,ivalnum->height,ivalnum->pixel_format);
-	if(ivalnum->index>1)
+	csi_dev_dbg("%s: called!\n",__func__);
+	if (interval->index >= ARRAY_SIZE(ov7670_frame_rates))
 		return -EINVAL;
-
-	if(ivalnum->index==0)
-		ivalnum->discrete.denominator=30;
-	else
-		ivalnum->discrete.denominator=15;
-
-	ivalnum->type=V4L2_FRMIVAL_TYPE_DISCRETE;
-	ivalnum->discrete.numerator=1;
-
-	/*if (ivalnum->index)
-		return -EINVAL;
-	ivalnum->type = V4L2_FRMIVAL_TYPE_STEPWISE; // V4L2_FRMIVAL_TYPE_CONTINUOUS; //
-
-	ivalnum->stepwise.min.numerator = 1;
-	ivalnum->stepwise.min.denominator = 10;
-
-	ivalnum->stepwise.max.numerator = 1;
-	ivalnum->stepwise.max.denominator = 30;
- 
-	ivalnum->stepwise.step.numerator = 1;
-	ivalnum->stepwise.step.denominator = 15;*/
-	//printk("enum_intervals\n%dx%d\n",ivalnum->width,ivalnum->height);
+	interval->type = V4L2_FRMIVAL_TYPE_DISCRETE;
+	interval->discrete.numerator = 1;
+	interval->discrete.denominator = ov7670_frame_rates[interval->index];
 	return 0;
 }
 static int sensor_enum_size(struct v4l2_subdev *sd, struct v4l2_frmsizeenum *fsize)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
   if(fsize->index > N_WIN_SIZES-1)
   	return -EINVAL;
   
@@ -1111,6 +1106,7 @@ static int ov7670_try_fmt_internal(struct v4l2_subdev *sd,
 		struct ov7670_format_struct **ret_fmt,
 		struct ov7670_win_size **ret_wsize)
 {
+	csi_dev_dbg("%s: called! %dx%d code=0x%2x\n",__func__,fmt->width,fmt->height,fmt->code);
 	int index;
 	struct ov7670_win_size *wsize;
 //	struct v4l2_pix_format *pix = &fmt->fmt.pix;//linux-3.0
@@ -1160,6 +1156,7 @@ static int ov7670_try_fmt_internal(struct v4l2_subdev *sd,
 static int ov7670_try_fmt(struct v4l2_subdev *sd,
              struct v4l2_mbus_framefmt *fmt)//linux-3.0
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	return ov7670_try_fmt_internal(sd, fmt, NULL, NULL);
 }
 
@@ -1169,6 +1166,7 @@ static int ov7670_try_fmt(struct v4l2_subdev *sd,
 static int ov7670_s_fmt(struct v4l2_subdev *sd,
              struct v4l2_mbus_framefmt *fmt)//linux-3.0
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	int ret;
 	struct ov7670_format_struct *ovfmt;
 	struct ov7670_win_size *wsize;
@@ -1220,6 +1218,7 @@ static int ov7670_s_fmt(struct v4l2_subdev *sd,
  */
 static int ov7670_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct v4l2_captureparm *cp = &parms->parm.capture;
 	struct ov7670_info *info = to_state(sd);
 
@@ -1237,6 +1236,7 @@ static int ov7670_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
 
 static int ov7670_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct v4l2_captureparm *cp = &parms->parm.capture;
 	struct v4l2_fract *tpf = &cp->timeperframe;
 	struct ov7670_info *info = to_state(sd);
@@ -1274,6 +1274,7 @@ static int ov7670_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
 static int ov7670_store_cmatrix(struct v4l2_subdev *sd,
 		int matrix[CMATRIX_LEN])
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	int i, ret;
 	unsigned char signbits = 0;
 
@@ -1326,6 +1327,7 @@ static const int ov7670_sin_table[] = {
 
 static int ov7670_sine(int theta)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	int chs = 1;
 	int sine;
 
@@ -1340,10 +1342,12 @@ static int ov7670_sine(int theta)
 		sine = 1000 - ov7670_sin_table[theta/SIN_STEP];
 	}
 	return sine*chs;
+
 }
 
 static int ov7670_cosine(int theta)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	theta = 90 - theta;
 	if (theta > 180)
 		theta -= 360;
@@ -1358,6 +1362,7 @@ static int ov7670_cosine(int theta)
 static void ov7670_calc_cmatrix(struct ov7670_info *info,
 		int matrix[CMATRIX_LEN])
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	int i;
 	/*
 	 * Apply the current saturation setting first.
@@ -1387,6 +1392,7 @@ static void ov7670_calc_cmatrix(struct ov7670_info *info,
 
 static int ov7670_s_sat(struct v4l2_subdev *sd, int value)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct ov7670_info *info = to_state(sd);
 	int matrix[CMATRIX_LEN];
 	int ret;
@@ -1399,6 +1405,7 @@ static int ov7670_s_sat(struct v4l2_subdev *sd, int value)
 
 static int ov7670_g_sat(struct v4l2_subdev *sd, __s32 *value)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct ov7670_info *info = to_state(sd);
 
 	*value = info->sat;
@@ -1407,6 +1414,7 @@ static int ov7670_g_sat(struct v4l2_subdev *sd, __s32 *value)
 
 static int ov7670_s_hue(struct v4l2_subdev *sd, int value)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct ov7670_info *info = to_state(sd);
 	int matrix[CMATRIX_LEN];
 	int ret;
@@ -1422,6 +1430,7 @@ static int ov7670_s_hue(struct v4l2_subdev *sd, int value)
 
 static int ov7670_g_hue(struct v4l2_subdev *sd, __s32 *value)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct ov7670_info *info = to_state(sd);
 
 	*value = info->hue;
@@ -1442,6 +1451,7 @@ static unsigned char ov7670_sm_to_abs(unsigned char v)
 
 static unsigned char ov7670_abs_to_sm(unsigned char v)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	if (v > 127)
 		return v & 0x7f;
 	return (128 - v) | 0x80;
@@ -1449,6 +1459,7 @@ static unsigned char ov7670_abs_to_sm(unsigned char v)
 
 static int ov7670_s_brightness(struct v4l2_subdev *sd, int value)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	unsigned char com8 = 0, v;
 	int ret;
 
@@ -1462,6 +1473,7 @@ static int ov7670_s_brightness(struct v4l2_subdev *sd, int value)
 
 static int ov7670_g_brightness(struct v4l2_subdev *sd, __s32 *value)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	unsigned char v = 0;
 	int ret = ov7670_read(sd, REG_BRIGHT, &v);
 
@@ -1704,6 +1716,7 @@ static int ov7670_queryctrl(struct v4l2_subdev *sd,
 static int sensor_g_flash_mode(struct v4l2_subdev *sd,
     __s32 *value)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct ov7670_info *info = to_state(sd);
 	enum v4l2_flash_mode *flash_mode = (enum v4l2_flash_mode*)value;
 
@@ -1714,6 +1727,7 @@ static int sensor_g_flash_mode(struct v4l2_subdev *sd,
 static int sensor_s_flash_mode(struct v4l2_subdev *sd,
     enum v4l2_flash_mode value)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct ov7670_info *info = to_state(sd);
 	struct csi_dev *dev=(struct csi_dev *)dev_get_drvdata(sd->v4l2_dev->dev);
 	char csi_flash_str[32];
@@ -1754,6 +1768,7 @@ static int sensor_s_flash_mode(struct v4l2_subdev *sd,
 
 static int ov7670_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	switch (ctrl->id) {
 	case V4L2_CID_BRIGHTNESS:
 		return ov7670_g_brightness(sd, &ctrl->value);
@@ -1783,6 +1798,7 @@ static int ov7670_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 
 static int ov7670_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	switch (ctrl->id) {
 	case V4L2_CID_BRIGHTNESS:
 		return ov7670_s_brightness(sd, ctrl->value);
@@ -1815,6 +1831,7 @@ static int ov7670_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 static int ov7670_g_chip_ident(struct v4l2_subdev *sd,
 		struct v4l2_dbg_chip_ident *chip)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 
 	return v4l2_chip_ident_i2c_client(client, chip, V4L2_IDENT_OV7670, 0);
@@ -1823,6 +1840,7 @@ static int ov7670_g_chip_ident(struct v4l2_subdev *sd,
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 static int ov7670_g_register(struct v4l2_subdev *sd, struct v4l2_dbg_register *reg)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	unsigned char val = 0;
 	int ret;
@@ -1839,6 +1857,7 @@ static int ov7670_g_register(struct v4l2_subdev *sd, struct v4l2_dbg_register *r
 
 static int ov7670_s_register(struct v4l2_subdev *sd, struct v4l2_dbg_register *reg)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 
 	if (!v4l2_chip_match_i2c_client(client, &reg->match))
@@ -1887,6 +1906,7 @@ static const struct v4l2_subdev_ops ov7670_ops = {
 static int ov7670_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct v4l2_subdev *sd;
 	struct ov7670_info *info;
 //	int ret;
@@ -1908,6 +1928,7 @@ static int ov7670_probe(struct i2c_client *client,
 
 static int ov7670_remove(struct i2c_client *client)
 {
+	csi_dev_dbg("%s: called!\n",__func__);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
