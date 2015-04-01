@@ -211,21 +211,24 @@
 #define SPI_MASTER_MODE         (0x1)
 #define SPI_SLAVE_MODE          (0x0)
 
-struct sun7i_spi_platform_data {
+#define AW_SPI_OK   0
+#define AW_SPI_FAIL 1
+
+struct sunxi_spi_platform_data {
     int cs_bitmap;          // cs0-0x1,cs1-0x2,cs0&cs1-0x3
     int num_cs;             // number of cs
     const char *clk_name;   // ahb clk name
 };
 
 /* spi device controller state, alloc */
-struct sun7i_spi_config {
+struct sunxi_spi_config {
     int bits_per_word;      // 8bit
     int max_speed_hz;       // 80MHz
     int mode;               // pha,pol,LSB,etc..
 };
 
 /* spi device data, used in dual spi mode */
-struct sun7i_dual_mode_dev_data {
+struct sunxi_dual_mode_dev_data {
     int dual_mode;          // dual SPI mode, 0-single mode, 1-dual mode
     int single_cnt;         // single mode transmit counter
     int dummy_cnt;          // dummy counter should be sent before receive in dual mode

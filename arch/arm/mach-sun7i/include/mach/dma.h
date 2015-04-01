@@ -232,6 +232,14 @@ typedef struct {
 	void 		*parg;	/* args of func */
 }dma_cb_t;
 
+enum sw_dmadir {
+        SW_DMA_RWNULL,
+        SW_DMA_RDEV,            /* read from dev */
+        SW_DMA_WDEV,            /* write to dev */
+        SW_DMA_M2M,
+//      SW_DMA_RWDEV            /* can r/w dev */
+};
+
 /* dma channel type */
 typedef enum {
 	CHAN_NORMAL,		/* normal channel, id 0~7 */
