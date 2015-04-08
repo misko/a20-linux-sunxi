@@ -42,9 +42,8 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
-//#define SHOW_TEST_PATTERN
 //for internel driver debug
-#define DEV_DBG_EN   		1
+#define DEV_DBG_EN   		0
 #if(DEV_DBG_EN == 1)
 #define csi_dev_dbg(x,arg...) printk(KERN_INFO"[CSI_DEBUG][MT9P031]"x,##arg)
 #else
@@ -54,7 +53,7 @@
 #define csi_dev_print(x,arg...) printk(KERN_INFO"[CSI][MT9P031]"x,##arg)
 
 #define MCLK (24*1000*1000)
-#define VREF_POL	CSI_LOW
+#define VREF_POL	CSI_HIGH
 #define HREF_POL	CSI_HIGH
 #define CLK_POL		CSI_RISING
 #define IO_CFG		0						//0 for csi0
@@ -122,6 +121,15 @@
 #define         MT9P031_RST_ENABLE                      1
 #define         MT9P031_RST_DISABLE                     0
 #define MT9P031_READ_MODE_1                             0x1e
+#define         MT9P031_READ_MODE_1_INV_TRIG		(1 << 9)
+#define         MT9P031_READ_MODE_1_SNAPSHOT		(1 << 8)
+#define         MT9P031_READ_MODE_1_GLOBAL_RESET	(1 << 7)
+#define         MT9P031_READ_MODE_1_BULB_EXP		(1 << 6)
+#define         MT9P031_READ_MODE_1_INV_STROBE		(1 << 5)
+#define         MT9P031_READ_MODE_1_STROBE		(1 << 4)
+#define         MT9P031_READ_MODE_1_STROBE_START	(1 << 2)
+#define         MT9P031_READ_MODE_1_STROBE_END		(1 << 0)
+
 #define MT9P031_READ_MODE_2                             0x20
 #define         MT9P031_READ_MODE_2_ROW_MIR             (1 << 15)
 #define         MT9P031_READ_MODE_2_COL_MIR             (1 << 14)
@@ -130,7 +138,7 @@
 #define MT9P031_COLUMN_ADDRESS_MODE                     0x23
 #define MT9P031_GLOBAL_GAIN                             0x35
 #define         MT9P031_GLOBAL_GAIN_MIN                 8
-#define         MT9P031_GLOBAL_GAIN_MAX                 1024
+#define         MT9P031_GLOBAL_GAIN_MAX                 65536
 #define         MT9P031_GLOBAL_GAIN_DEF                 8
 #define         MT9P031_GLOBAL_GAIN_MULT                (1 << 6)
 #define MT9P031_ROW_BLACK_TARGET                        0x49
@@ -184,9 +192,11 @@ struct mt9p031 {
         struct v4l2_ctrl *blc_auto;
         struct v4l2_ctrl *blc_offset;
 
+	int debug_reg;
         /* Registers cache */
+	int oc;
         u16 output_control;
-        u16 mode2;
+        u16 mode1, mode2;
 	int hflip;
 	int vflip;
 	int gain;
@@ -239,7 +249,20 @@ static int mt9p031_set_mode2(struct mt9p031 *mt9p031, u16 clear, u16 set)
         mt9p031->mode2 = value;
         return 0;
 }
+static int mt9p031_set_mode1(struct mt9p031 *mt9p031, u16 clear, u16 set)
+{
+	csi_dev_dbg("%s: called!\n",__func__);
+        struct i2c_client *client = v4l2_get_subdevdata(&mt9p031->subdev);
+        u16 value = (mt9p031->mode1 & ~clear) | set;
+        int ret;
+	csi_dev_dbg("%s: clear=0x%00x set=0x%00x value=0x%00x\n",__func__, clear, set, value);
+        ret = mt9p031_write(client, MT9P031_READ_MODE_1, value);
+        if (ret < 0)
+                return ret;
 
+        mt9p031->mode1 = value;
+        return 0;
+}
 static int mt9p031_reset(struct mt9p031 *mt9p031)
 {
 	csi_dev_dbg("%s: called!\n",__func__);
@@ -257,13 +280,34 @@ static int mt9p031_reset(struct mt9p031 *mt9p031)
                 return ret;
 
 	csi_dev_dbg("%s: set MT9P031_PIXEL_CLOCK_CONTROL (0x%00x) val=(1<<0x%00x)\n",__func__,MT9P031_PIXEL_CLOCK_CONTROL,mt9p031->clk_div);
-        ret = mt9p031_write(client, MT9P031_PIXEL_CLOCK_CONTROL,
-                            MT9P031_PIXEL_CLOCK_DIVIDE(mt9p031->clk_div));
+        ret = mt9p031_write(client, MT9P031_PIXEL_CLOCK_CONTROL, mt9p031->clk_div );
         if (ret < 0)
                 return ret;
 
-        return mt9p031_set_output_control(mt9p031, MT9P031_OUTPUT_CONTROL_CEN,
-                                          0);
+        return 0;
+}
+static int mt9p031_pll_enable(struct mt9p031 *info)
+{
+	int ret;
+	struct i2c_client *client = v4l2_get_subdevdata(&info->subdev);
+        ret = mt9p031_write(client, MT9P031_PLL_CONTROL,
+                            MT9P031_PLL_CONTROL_PWRON);
+        if (ret < 0)
+                return ret;
+
+        ret = mt9p031_write(client, MT9P031_PLL_CONFIG_1, 0x1003-info->oc); //10/03+1=96Mhz x1002=120Mhz 1001=144Mhz 
+        if (ret < 0)
+                return ret;
+
+        /*ret = mt9p031_write(client, MT9P031_PLL_CONFIG_2, 0x0000);
+        if (ret < 0)
+                return ret;*/
+
+        msleep(100);
+        ret = mt9p031_write(client, MT9P031_PLL_CONTROL,
+                            MT9P031_PLL_CONTROL_PWRON |
+                            MT9P031_PLL_CONTROL_USEPLL);
+        return ret;
 }
 /* -----------------------------------------------------------------------------
  * V4L2 subdev video operations
@@ -502,39 +546,35 @@ static int mt9p031_set_format(struct v4l2_subdev *subdev,
         return 0;
 }
 
-static int mt9p031_get_crop(struct v4l2_subdev *subdev,
-                            struct v4l2_subdev_fh *fh,
-                            struct v4l2_subdev_crop *crop)
+static int mt9p031_get_crop(struct v4l2_subdev *subdev, struct v4l2_crop *crop)
 {
 	csi_dev_dbg("%s: called!\n",__func__);
         struct mt9p031 *mt9p031 = to_mt9p031(subdev);
 
-        crop->rect = *__mt9p031_get_pad_crop(mt9p031, fh, crop->pad,
-                                             crop->which);
-        return 0;
+	struct v4l2_crop c;
+	crop->c=mt9p031->crop;
+    return 0;
 }
 
-static int mt9p031_set_crop(struct v4l2_subdev *subdev,
-                            struct v4l2_subdev_fh *fh,
-                            struct v4l2_subdev_crop *crop)
+static int mt9p031_set_crop(struct v4l2_subdev *subdev, struct v4l2_crop *crop)
 {
-	csi_dev_dbg("%s: called!\n",__func__);
+		csi_dev_dbg("%s: called!\n",__func__);
         struct mt9p031 *mt9p031 = to_mt9p031(subdev);
         struct v4l2_mbus_framefmt *__format;
-        struct v4l2_rect *__crop;
         struct v4l2_rect rect;
 
         /* Clamp the crop rectangle boundaries and align them to a multiple of 2
          * pixels to ensure a GRBG Bayer pattern.
          */
-        rect.left = clamp(ALIGN(crop->rect.left, 2), MT9P031_COLUMN_START_MIN,
+		csi_dev_dbg("request crop (%d, %d, %d, %d)\n",crop->c.left,crop->c.top,crop->c.width,crop->c.height);
+        rect.left = clamp(ALIGN(crop->c.left, 2), MT9P031_COLUMN_START_MIN,
                           MT9P031_COLUMN_START_MAX);
-        rect.top = clamp(ALIGN(crop->rect.top, 2), MT9P031_ROW_START_MIN,
+        rect.top = clamp(ALIGN(crop->c.top, 2), MT9P031_ROW_START_MIN,
                          MT9P031_ROW_START_MAX);
-        rect.width = clamp_t(unsigned int, ALIGN(crop->rect.width, 2),
+        rect.width = clamp_t(unsigned int, ALIGN(crop->c.width, 2),
                              MT9P031_WINDOW_WIDTH_MIN,
                              MT9P031_WINDOW_WIDTH_MAX);
-        rect.height = clamp_t(unsigned int, ALIGN(crop->rect.height, 2),
+        rect.height = clamp_t(unsigned int, ALIGN(crop->c.height, 2),
                               MT9P031_WINDOW_HEIGHT_MIN,
                               MT9P031_WINDOW_HEIGHT_MAX);
 
@@ -543,29 +583,11 @@ static int mt9p031_set_crop(struct v4l2_subdev *subdev,
         rect.height = min_t(unsigned int, rect.height,
                             MT9P031_PIXEL_ARRAY_HEIGHT - rect.top);
 
-        __crop = __mt9p031_get_pad_crop(mt9p031, fh, crop->pad, crop->which);
-
-        if (rect.width != __crop->width || rect.height != __crop->height) {
-                /* Reset the output image size if the crop rectangle size has
-                 * been modified.
-                 */
-                __format = __mt9p031_get_pad_format(mt9p031, fh, crop->pad,
-                                                    crop->which);
-                __format->width = rect.width;
-                __format->height = rect.height;
-        }
-
-        *__crop = rect;
-        crop->rect = rect;
-
-        return 0;
+		mt9p031->crop = rect;
+    	crop->c = rect;
+		return mt9p031_set_params(mt9p031);
 }
 
-#define V4L2_CID_TEST_PATTERN		(V4L2_CID_USER_BASE | 0x1001)
-#define V4L2_CID_BLC_AUTO               (V4L2_CID_USER_BASE | 0x1002)
-#define V4L2_CID_BLC_TARGET_LEVEL       (V4L2_CID_USER_BASE | 0x1003)
-#define V4L2_CID_BLC_ANALOG_OFFSET      (V4L2_CID_USER_BASE | 0x1004)
-#define V4L2_CID_BLC_DIGITAL_OFFSET     (V4L2_CID_USER_BASE | 0x1005)
 
 /* -----------------------------------------------------------------------------
  * V4L2 subdev control operations
@@ -577,9 +599,13 @@ static int sensor_queryctrl(struct v4l2_subdev *sd,
 	/* see include/linux/videodev2.h for details */
 	/* see sensor_s_parm and sensor_g_parm for the meaning of value */
 	switch (qc->id) {
+	case V4L2_CID_REG_RW_ADDR:
+		return v4l2_ctrl_query_fill(qc, -1, 0xffff, 1, 1);
+	case V4L2_CID_REG_RW:
+		return v4l2_ctrl_query_fill(qc, 0, 0xffff, 1, 1);
 	case V4L2_CID_VFLIP:
 	case V4L2_CID_HFLIP:
-		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 1);
 	case V4L2_CID_GAIN:
 		return v4l2_ctrl_query_fill(qc, MT9P031_GLOBAL_GAIN_MIN,
                           MT9P031_GLOBAL_GAIN_MAX, 1, MT9P031_GLOBAL_GAIN_DEF);
@@ -595,6 +621,30 @@ static int sensor_queryctrl(struct v4l2_subdev *sd,
 		return v4l2_ctrl_query_fill(qc, -255, 255, 1, 32);
 	case V4L2_CID_BLC_DIGITAL_OFFSET:
 		return v4l2_ctrl_query_fill(qc, -2048, 2047, 1, 40);
+	case V4L2_CID_TEST_PATTERN:
+		return v4l2_ctrl_query_fill(qc, 0, 5, 1, 0);
+	case V4L2_CID_PIXEL_RATE:
+		return v4l2_ctrl_query_fill(qc, 0, 3, 1, 0);		
+	case V4L2_CID_OVERCLOCK_CAM:
+		return v4l2_ctrl_query_fill(qc, 0, 2, 1, 0);
+	case V4L2_CID_SNAPSHOT_ENABLED:
+		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+	case V4L2_CID_GLOBAL_RESET:
+		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+	case V4L2_CID_BULB_EXPOSURE:
+		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+	case V4L2_CID_SNAPSHOT_TRIGGER:
+		return v4l2_ctrl_query_fill(qc, 0, 5, 1, 0);
+	case V4L2_CID_SNAPSHOT_TRIGGER_INV:
+		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+	case V4L2_CID_STROBE_ENABLED:
+		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+	case V4L2_CID_STROBE_INV:
+		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+	case V4L2_CID_STROBE_START:
+		return v4l2_ctrl_query_fill(qc, 0, 3, 1, 1);
+	case V4L2_CID_STROBE_END:
+		return v4l2_ctrl_query_fill(qc, 0, 3, 1, 2);
 
 	}
 	return -EINVAL;
@@ -607,21 +657,93 @@ static int mt9p031_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret=-1;
 	switch (ctrl->id) {
+	case V4L2_CID_REG_RW_ADDR:
+		ctrl->value = mt9p031->debug_reg;
+		return 0;
+	case V4L2_CID_REG_RW:
+		if(mt9p031->debug_reg>=0)
+			ctrl->value = mt9p031_read(client, mt9p031->debug_reg);
+		else{
+			printk("Ignore REG_RW_ADDR=-1!\n");
+			ctrl->value=0;
+		}
+		return 0;
 	case V4L2_CID_VFLIP:
-		ctrl->value = (mt9p031->mode2>>15&1);
+		ctrl->value = ((mt9p031->mode2&MT9P031_READ_MODE_2_ROW_MIR)>0);
 		csi_dev_dbg("%s: V4L2_CID_VFLIP ctrl->value=0x%00x\n",__func__, ctrl->value);
 		return 0;
 	case V4L2_CID_HFLIP:
-		ctrl->value = (mt9p031->mode2>>14&1);
+		ctrl->value = ((mt9p031->mode2&MT9P031_READ_MODE_2_COL_MIR)>0);
 		csi_dev_dbg("%s: V4L2_CID_HFLIP ctrl->value=0x%00x\n",__func__, ctrl->value);
 		return 0;
 	case V4L2_CID_GAIN:
 		ctrl->value = mt9p031_read(client, MT9P031_GLOBAL_GAIN);
 		csi_dev_dbg("%s: V4L2_CID_GAIN ctrl->value=0x%00x\n",__func__, ctrl->value);
-		return ret;
+		return 0;
 	case V4L2_CID_EXPOSURE:
 		ctrl->value = (mt9p031_read(client, MT9P031_SHUTTER_WIDTH_UPPER)<<16)+mt9p031_read(client, MT9P031_SHUTTER_WIDTH_LOWER);
 		csi_dev_dbg("%s: V4L2_CID_EXPOSURE ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_BLC_AUTO:
+		ctrl->value = mt9p031_read(client, MT9P031_BLACK_LEVEL_CALIBRATION) ? 0 : MT9P031_BLC_MANUAL_BLC;
+		return 0;
+	case V4L2_CID_BLC_TARGET_LEVEL:
+		ctrl->value = mt9p031_read(client, MT9P031_ROW_BLACK_TARGET);
+		return 0;
+	case V4L2_CID_BLC_ANALOG_OFFSET:
+		ctrl->value = mt9p031_read(client, MT9P031_GREEN1_OFFSET );
+		return 0;
+	case V4L2_CID_BLC_DIGITAL_OFFSET:
+		ctrl->value = mt9p031_read(client, MT9P031_ROW_BLACK_DEF_OFFSET);
+		return 0;
+        case V4L2_CID_TEST_PATTERN:
+		ret = mt9p031_read(client, MT9P031_TEST_PATTERN);
+		ctrl->value = (ret&MT9P031_TEST_PATTERN_ENABLE)?( ret >> MT9P031_TEST_PATTERN_SHIFT):MT9P031_TEST_PATTERN_DISABLE;
+		csi_dev_dbg("%s: V4L2_CID_TEST_PATTERN ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_PIXEL_RATE:
+		ctrl->value = mt9p031->clk_div;
+		csi_dev_dbg("%s: V4L2_CID_PIXEL_RATE ctrl->value=0x%00x\n",__func__, ctrl->value);		
+		return 0;
+	case V4L2_CID_OVERCLOCK_CAM:
+		ctrl->value = mt9p031->oc;
+		csi_dev_dbg("%s: V4L2_CID_OVERCLOCK_CAM ctrl->value=0x%00x\n",__func__, ctrl->value);	
+		return 0;
+	case V4L2_CID_SNAPSHOT_ENABLED:
+		ctrl->value = ( ( mt9p031_read(client, MT9P031_READ_MODE_1) & MT9P031_READ_MODE_1_SNAPSHOT ) > 0 );
+		csi_dev_dbg("%s: V4L2_CID_SNAPSHOT_ENABLED ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_GLOBAL_RESET:
+		ctrl->value = ( ( mt9p031_read(client, MT9P031_READ_MODE_1) & MT9P031_READ_MODE_1_GLOBAL_RESET ) > 0 );
+		csi_dev_dbg("%s: V4L2_CID_GLOBAL_RESET ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_BULB_EXPOSURE:
+		ctrl->value = ( ( mt9p031_read(client, MT9P031_READ_MODE_1) & MT9P031_READ_MODE_1_BULB_EXP ) > 0 );
+		csi_dev_dbg("%s: BULB_EXPOSURE ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_SNAPSHOT_TRIGGER:
+		ctrl->value = mt9p031_read(client, MT9P031_FRAME_RESTART);
+		csi_dev_dbg("%s: V4L2_CID_SNAPSHOT_TRIGGER ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_SNAPSHOT_TRIGGER_INV:
+		ctrl->value = ( ( mt9p031_read(client, MT9P031_READ_MODE_1) & MT9P031_READ_MODE_1_INV_TRIG ) > 0 );
+		csi_dev_dbg("%s: V4L2_CID_SNAPSHOT_TRIGGER_INV ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_STROBE_ENABLED:
+		ctrl->value = ( ( mt9p031_read(client, MT9P031_READ_MODE_1) & MT9P031_READ_MODE_1_STROBE ) > 0 );
+		csi_dev_dbg("%s: V4L2_CID_STROBE_ENABLED ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_STROBE_INV:
+		ctrl->value = ( ( mt9p031_read(client, MT9P031_READ_MODE_1) & MT9P031_READ_MODE_1_INV_STROBE ) > 0 );
+		csi_dev_dbg("%s: V4L2_CID_STROBE_ENABLED ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_STROBE_START:
+		ctrl->value = ( mt9p031_read(client, MT9P031_READ_MODE_1) & (3<<2) )>>2;
+		csi_dev_dbg("%s: V4L2_CID_STROBE_ENABLED ctrl->value=0x%00x\n",__func__, ctrl->value);
+		return 0;
+	case V4L2_CID_STROBE_END:
+		ctrl->value = ( mt9p031_read(client, MT9P031_READ_MODE_1) & 3 );
+		csi_dev_dbg("%s: V4L2_CID_STROBE_ENABLED ctrl->value=0x%00x\n",__func__, ctrl->value);
 		return 0;
 	}
 	csi_dev_dbg("%s: no match for control 0x%00X\n",__func__, ctrl->id);
@@ -637,6 +759,13 @@ static int mt9p031_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
         int ret=-1;
 
         switch (ctrl->id) {
+	case V4L2_CID_REG_RW_ADDR:
+		mt9p031->debug_reg=(ctrl->value & 0xFFFF);
+		return 0;
+	case V4L2_CID_REG_RW:
+		if(mt9p031->debug_reg > 0)
+			mt9p031_write(client, (mt9p031->debug_reg & 0xFFFF), (ctrl->value & 0xFFFF));
+		return 0;
         case V4L2_CID_EXPOSURE:
 		csi_dev_dbg("%s: V4L2_CID_EXPOSURE 0x%00x\n",__func__,ctrl->value);
                 ret = mt9p031_write(client, MT9P031_SHUTTER_WIDTH_UPPER,
@@ -727,8 +856,7 @@ static int mt9p031_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
                  //Disable digital black level compensation when using a test
                  //pattern.
                  
-                ret = mt9p031_set_mode2(mt9p031, MT9P031_READ_MODE_2_ROW_BLC,
-                                        0);
+                ret = mt9p031_set_mode2(mt9p031, MT9P031_READ_MODE_2_ROW_BLC,0);
                 if (ret < 0)
                         return ret;
 
@@ -774,8 +902,89 @@ static int mt9p031_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 		csi_dev_dbg("%s: V4L2_CID_BLC_DIGITAL_OFFSET\n",__func__);
                 return mt9p031_write(client, MT9P031_ROW_BLACK_DEF_OFFSET,
                                      ctrl->value & ((1 << 12) - 1));
+	case V4L2_CID_PIXEL_RATE:
+		mt9p031->clk_div = ( ctrl->value & 3 ); 
+		mt9p031_write(client, MT9P031_PIXEL_CLOCK_CONTROL, mt9p031->clk_div);
+                return 0; /*mt9p031_write(client, xxx, ctrl->value & 3);*/
+	case V4L2_CID_OVERCLOCK_CAM:
+		csi_dev_dbg("%s: V4L2_CID_OVERCLOCK_CAM %d\n",__func__, ctrl->value);
+		mt9p031->oc = ctrl->value & 3;
+		return mt9p031_pll_enable(mt9p031);
+	case V4L2_CID_SNAPSHOT_ENABLED:
+		csi_dev_dbg("%s: V4L2_CID_SNAPSHOT_ENABLED %d\n",__func__, ctrl->value);
+                return mt9p031_set_mode1(mt9p031,
+                                ctrl->value ? 0 : MT9P031_READ_MODE_1_SNAPSHOT,
+                                ctrl->value ? MT9P031_READ_MODE_1_SNAPSHOT : 0);
+	case V4L2_CID_GLOBAL_RESET:
+                return mt9p031_set_mode1(mt9p031,
+                                ctrl->value ? 0 : MT9P031_READ_MODE_1_GLOBAL_RESET,
+                                ctrl->value ? MT9P031_READ_MODE_1_GLOBAL_RESET : 0);
+		return 0;
+	case V4L2_CID_BULB_EXPOSURE:
+                return mt9p031_set_mode1(mt9p031,
+                                ctrl->value ? 0 : MT9P031_READ_MODE_1_BULB_EXP,
+                                ctrl->value ? MT9P031_READ_MODE_1_BULB_EXP : 0);
+		return 0;
+	case V4L2_CID_SNAPSHOT_TRIGGER://FIXME
+		csi_dev_dbg("%s: V4L2_CID_SNAPSHOT_TRIGGER %d\n",__func__, ctrl->value);
+		mt9p031_write(client, MT9P031_FRAME_RESTART, ctrl->value);
+                return; 
+	case V4L2_CID_SNAPSHOT_TRIGGER_INV:
+		csi_dev_dbg("%s: V4L2_CID_SNAPSHOT_TRIGGER_INV %d\n",__func__, ctrl->value);
+                return mt9p031_set_mode1(mt9p031,
+                                ctrl->value ? 0 : MT9P031_READ_MODE_1_INV_TRIG,
+                                ctrl->value ? MT9P031_READ_MODE_1_INV_TRIG : 0);
+	case V4L2_CID_STROBE_ENABLED:
+		csi_dev_dbg("%s: V4L2_CID_STROBE_ENABLED %d\n",__func__, ctrl->value);
+                return mt9p031_set_mode1(mt9p031,
+                                ctrl->value ? 0 : MT9P031_READ_MODE_1_STROBE,
+                                ctrl->value ? MT9P031_READ_MODE_1_STROBE : 0);
+	case V4L2_CID_STROBE_INV:
+		csi_dev_dbg("%s: V4L2_CID_STROBE_INV %d\n",__func__, ctrl->value);
+                return mt9p031_set_mode1(mt9p031,
+                                ctrl->value ? 0 : MT9P031_READ_MODE_1_INV_STROBE,
+                                ctrl->value ? MT9P031_READ_MODE_1_INV_STROBE : 0);
+	case V4L2_CID_STROBE_START://FIXME
+		csi_dev_dbg("%s: V4L2_CID_STROBE_START %d\n",__func__, ctrl->value);
+                return mt9p031_set_mode1(mt9p031,
+                                ctrl->value ? 0 : 3<<2,
+                                ctrl->value ? (ctrl->value&3)<<2 : 0);
+	case V4L2_CID_STROBE_END://FIXME
+		csi_dev_dbg("%s: V4L2_CID_STROBE_END %d\n",__func__, ctrl->value);
+                return mt9p031_set_mode1(mt9p031,
+                                ctrl->value ? 0 : 3,
+                                ctrl->value ? (ctrl->value&3) : 0);
         }
 	csi_dev_dbg("%s: no match for control 0x%00X\n",__func__, ctrl->id);
+        return -EINVAL;
+}
+static int mt9p031_g_ext_ctrls(struct v4l2_subdev *sd, struct v4l2_ext_controls *ctrls)
+{
+	csi_dev_dbg("%s: called!\n",__func__);
+	struct mt9p031 *mt9p031 = container_of(sd, struct mt9p031, subdev);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	int i, last=0;
+	for(i=0; i<ctrls->count; i++){
+		//printk("Add ext control %d of %d %X",i,ctrls->count,ctrls->controls->id);
+		struct v4l2_ext_control *ctrl = ctrls->controls + i;
+		if (last) {
+			ctrls->error_idx = i;
+			return 0;
+		}
+	}
+	return 0;
+}
+static int mt9p031_s_ext_ctrls(struct v4l2_subdev *sd, struct v4l2_ext_controls *ctrls)
+{
+	csi_dev_dbg("%s: called!\n",__func__);
+        struct mt9p031 *mt9p031 = container_of(sd, struct mt9p031, subdev);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+        u16 data;
+        int ret=-1;
+
+        /*switch (ctrls->controls->id) {
+        }*/
+	csi_dev_dbg("%s: no match for control 0x%00X\n",__func__, ctrls->controls->id);
         return -EINVAL;
 }
 static int sensor_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
@@ -810,8 +1019,8 @@ static struct sensor_format_struct {
 	int bpp;
 } sensor_formats[] = {
 	{
-		.desc		= "SBGGR12_1X12",
-		.mbus_code	= V4L2_MBUS_FMT_SBGGR12_1X12, //V4L2_MBUS_FMT_SBGGR8_1X8,
+		.desc		= "SBGGR8_1X8",
+		.mbus_code	= V4L2_MBUS_FMT_SGRBG8_1X8,
 		.bpp		= 2,
 	}
 };
@@ -822,6 +1031,10 @@ static int sensor_try_fmt_internal(struct v4l2_subdev *sd,
 {
 	csi_dev_dbg("%s: called!\n",__func__);
 	struct mt9p031 *info = to_mt9p031(sd);
+	if(fmt->code != info->format.code){
+		printk("format not supported!\n");
+		return -EINVAL;
+	}
 
 	if (ret_fmt != NULL)
 		*ret_fmt = sensor_formats;
@@ -847,7 +1060,8 @@ static int sensor_try_fmt_internal(struct v4l2_subdev *sd,
 	info->format.height=fmt->height;
 	info->format.width=fmt->width;
 	csi_dev_dbg("%s: got size %dx%d\n",__func__, fmt->width,fmt->height);
-	return 0;
+
+	return mt9p031_set_params(info);
 }
 
 static int sensor_try_fmt(struct v4l2_subdev *sd,
@@ -861,9 +1075,9 @@ static int sensor_s_fmt(struct v4l2_subdev *sd,
 	return sensor_try_fmt_internal(sd, fmt, NULL, NULL);
 }
 
-/*static struct v4l2_ctrl_ops mt9p031_ctrl_ops = {
+static struct v4l2_ctrl_ops mt9p031_ctrl_ops = {
         .s_ctrl = mt9p031_s_ctrl,
-};*/
+};
 
 static const char * const mt9p031_test_pattern_menu[] = {
         "Disabled",
@@ -877,6 +1091,60 @@ static const char * const mt9p031_test_pattern_menu[] = {
         "Monochrome Vertical Bars",
         "Vertical Color Bars",
 };
+static const struct v4l2_ctrl_config mt9p031_ctrls[] = {
+        {
+                .ops            = &mt9p031_ctrl_ops,
+                .id             = V4L2_CID_BLC_AUTO,
+                .type           = V4L2_CTRL_TYPE_BOOLEAN,
+                .name           = "BLC, Auto",
+                .min            = 0,
+                .max            = 1,
+                .step           = 1,
+                .def            = 1,
+                .flags          = 0,
+        }, {
+                .ops            = &mt9p031_ctrl_ops,
+                .id             = V4L2_CID_BLC_TARGET_LEVEL,
+                .type           = V4L2_CTRL_TYPE_INTEGER,
+                .name           = "BLC Target Level",
+                .min            = 0,
+                .max            = 4095,
+                .step           = 1,
+                .def            = 168,
+                .flags          = 0,
+        }, {
+                .ops            = &mt9p031_ctrl_ops,
+                .id             = V4L2_CID_BLC_ANALOG_OFFSET,
+                .type           = V4L2_CTRL_TYPE_INTEGER,
+                .name           = "BLC Analog Offset",
+                .min            = -255,
+                .max            = 255,
+                .step           = 1,
+                .def            = 32,
+                .flags          = 0,
+        }, {
+                .ops            = &mt9p031_ctrl_ops,
+                .id             = V4L2_CID_BLC_DIGITAL_OFFSET,
+                .type           = V4L2_CTRL_TYPE_INTEGER,
+                .name           = "BLC Digital Offset",
+                .min            = -2048,
+                .max            = 2047,
+                .step           = 1,
+                .def            = 40,
+                .flags          = 0,
+        }, {
+                .ops            = &mt9p031_ctrl_ops,
+                .id             = V4L2_CID_TEST_PATTERN,
+                .type           = V4L2_CTRL_TYPE_INTEGER,
+                .name           = "Enable Test Pattern",
+                .min            = 0,
+                .max            = 10,
+                .step           = 1,
+                .def            = 0,
+                .flags          = 0,
+        }
+};
+
 
 /* -----------------------------------------------------------------------------
  * V4L2 subdev core operations
@@ -903,29 +1171,12 @@ static int mt9p031_set_power(struct v4l2_subdev *subdev, int on)
 	{
 		case CSI_SUBDEV_STBY_ON:
 			csi_dev_dbg("CSI_SUBDEV_STBY_ON\n");
-			//reset off io
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_reset_str);
-			msleep(10);
-			//active mclk before stadby in
-			clk_enable(dev->csi_module_clk);
-			msleep(100);
-			//disable io oe
-			csi_dev_print("disalbe oe!\n");
-			//ret = sensor_write_array(sd, sensor_oe_disable_regs , ARRAY_SIZE(sensor_oe_disable_regs));
-			//if(ret < 0)
-			//	csi_dev_err("disalbe oe falied!\n");
-			//standby on io
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_ON,csi_stby_str);
-			msleep(100);
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_OFF,csi_stby_str);
+			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_ON,csi_reset_str);
 			msleep(100);
 			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_ON,csi_stby_str);
 			msleep(100);
-			//inactive mclk after stadby in
 			clk_disable(dev->csi_module_clk);
 
-//			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_ON,csi_reset_str);
-//			msleep(10);
 			break;
 		case CSI_SUBDEV_STBY_OFF:
 			csi_dev_dbg("CSI_SUBDEV_STBY_OFF\n");
@@ -933,15 +1184,11 @@ static int mt9p031_set_power(struct v4l2_subdev *subdev, int on)
 			clk_enable(dev->csi_module_clk);
 			msleep(10);
 			//reset off io
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_reset_str);
-			msleep(10);
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_ON,csi_reset_str);
-			msleep(100);
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_reset_str);
 			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_OFF,csi_stby_str);
 			msleep(10);
+			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_reset_str);
+			msleep(10);
 
-			/*msleep(100);
 			ret = mt9p031_reset(info);
         		if (ret < 0){
 				csi_dev_err("mt9p031_reset failed!\n");
@@ -952,89 +1199,34 @@ static int mt9p031_set_power(struct v4l2_subdev *subdev, int on)
         		if (ret < 0){
 				csi_dev_err("mt9p031_set_params failed!\n");
                 		return ret;
-			}*/
-
-        		/* Switch to master "normal" mode */
-        		/*ret = mt9p031_set_output_control(info, 0,
-                                         MT9P031_OUTPUT_CONTROL_CEN);
-        		if (ret < 0){
-				csi_dev_err("%s: set_output_control failed!\n",__func__);
-                		return ret;
-			}*/
+			}
 
 			//enable pll
-			/*struct i2c_client *client = v4l2_get_subdevdata(&info->subdev);
-        		ret = mt9p031_write(client, MT9P031_PLL_CONTROL,
-                            		MT9P031_PLL_CONTROL_PWRON);
-        		if (ret < 0){
-				csi_dev_err("%s: set_pll_enabled failed!\n",__func__);
-                		return ret;
-			}*/
-
-
-#ifdef SHOW_TEST_PATTERN
-			struct i2c_client *client = v4l2_get_subdevdata(subdev);
-                        mt9p031_write(client, MT9P031_TEST_PATTERN,MT9P031_TEST_PATTERN_ENABLE);
-                        mt9p031_write(client, MT9P031_TEST_PATTERN_GREEN, 0x05a0);
-                	mt9p031_write(client, MT9P031_TEST_PATTERN_RED, 0x0a50);
-		        mt9p031_write(client, MT9P031_TEST_PATTERN_BLUE, 0x0aa0);
-#endif
+			mt9p031_pll_enable(info);
+			ret = mt9p031_set_mode2(info, MT9P031_READ_MODE_2_ROW_BLC, 0);
 			break;
 		case CSI_SUBDEV_PWR_ON:
 			csi_dev_dbg("CSI_SUBDEV_PWR_ON\n");
-			//inactive mclk before power on
+
 			clk_disable(dev->csi_module_clk);
 			//power on reset
 			gpio_set_one_pin_io_status(dev->csi_pin_hd,1,csi_stby_str);//set the gpio to output
 			gpio_set_one_pin_io_status(dev->csi_pin_hd,1,csi_reset_str);//set the gpio to output
 			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_ON,csi_stby_str);
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_ON,csi_reset_str);
-			msleep(1);
-			//power supply
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_PWR_ON,csi_power_str);
-			msleep(10);
-			if(dev->dvdd) {
-				regulator_enable(dev->dvdd);
-				msleep(10);
-			}
-			if(dev->avdd) {
-				regulator_enable(dev->avdd);
-				msleep(10);
-			}
-			if(dev->iovdd) {
-				regulator_enable(dev->iovdd);
-				msleep(10);
-			}
-			//active mclk before power on
+			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_ON,csi_stby_str);
+
 			clk_enable(dev->csi_module_clk);
-			//reset after power on
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_reset_str);
 			msleep(10);
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_ON,csi_reset_str);
-			msleep(100);
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_reset_str);
-			msleep(100);
 			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_OFF,csi_stby_str);
 			msleep(10);
-			//mt9p031_reset(info);
+			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_reset_str);
+			msleep(10);
 			break;
 
 		case CSI_SUBDEV_PWR_OFF:
 			csi_dev_dbg("CSI_SUBDEV_PWR_OFF\n");
-			//power supply off
-			if(dev->iovdd) {
-				regulator_disable(dev->iovdd);
-				msleep(10);
-			}
-			if(dev->avdd) {
-				regulator_disable(dev->avdd);
-				msleep(10);
-			}
-			if(dev->dvdd) {
-				regulator_disable(dev->dvdd);
-				msleep(10);
-			}
-			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_PWR_OFF,csi_power_str);
+			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_STBY_OFF,csi_stby_str);
+			gpio_write_one_pin_value(dev->csi_pin_hd,CSI_RST_OFF,csi_stby_str);
 			msleep(10);
 
 			//inactive mclk after power off
@@ -1199,10 +1391,7 @@ static int mt9p031_open(struct v4l2_subdev *subdev, struct v4l2_subdev_fh *fh)
 
         format = v4l2_subdev_get_try_format(fh, 0);
 
-        if (mt9p031->model == MT9P031_MODEL_MONOCHROME)
-                format->code = V4L2_MBUS_FMT_Y12_1X12;
-        else
-                format->code = V4L2_MBUS_FMT_SGRBG12_1X12;
+        format->code = V4L2_MBUS_FMT_Y8_1X8;
 
         format->width = MT9P031_WINDOW_WIDTH_DEF;
         format->height = MT9P031_WINDOW_HEIGHT_DEF;
@@ -1262,12 +1451,14 @@ static struct v4l2_subdev_ops mt9p031_subdev_ops = {
 static int mt9p031_probe(struct i2c_client *client,
                          const struct i2c_device_id *did)
 {
-	csi_dev_dbg("%s: called!\n",__func__);
+		csi_dev_dbg("%s: called!\n",__func__);
         //struct mt9p031_platform_data *pdata = mt9p031_get_pdata(client);
         struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
         struct mt9p031 *mt9p031;
         unsigned int i;
-        int ret;
+		int data;
+        int ret=0;
+	
 
         if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_WORD_DATA)) {
                 dev_warn(&client->dev,
@@ -1279,37 +1470,40 @@ static int mt9p031_probe(struct i2c_client *client,
         if (mt9p031 == NULL)
                 return -ENOMEM;
 
-	mt9p031->fmt = &sensor_formats[0];
-	mt9p031->ccm_info = &ccm_info_con;
-        mt9p031->output_control = MT9P031_OUTPUT_CONTROL_DEF;
-        mt9p031->mode2 = MT9P031_READ_MODE_2_ROW_BLC;
-        mt9p031->model = did->driver_data;
+		mt9p031->fmt = &sensor_formats[0];
+		mt9p031->ccm_info = &ccm_info_con;
+    	mt9p031->output_control = MT9P031_OUTPUT_CONTROL_DEF;
+    	mt9p031->oc = 0;
+		mt9p031->debug_reg=-1;
+    	mt9p031->mode1 = 0;
+    	mt9p031->mode2 = MT9P031_READ_MODE_2_ROW_BLC & MT9P031_READ_MODE_2_ROW_MIR & MT9P031_READ_MODE_2_COL_MIR;
+		mt9p031->clk_div=0;
+        mt9p031->model = MT9P031_MODEL_MONOCHROME; //did->driver_data;
         mt9p031->reset = -1;
 
-        mutex_init(&mt9p031->power_lock);
+        v4l2_ctrl_handler_init(&mt9p031->ctrls, ARRAY_SIZE(mt9p031_ctrls) + 6);
+
+        v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
+                          V4L2_CID_EXPOSURE, MT9P031_SHUTTER_WIDTH_MIN,
+                          MT9P031_SHUTTER_WIDTH_MAX, 1,
+                          MT9P031_SHUTTER_WIDTH_DEF);
+        v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
+                          V4L2_CID_GAIN, MT9P031_GLOBAL_GAIN_MIN,
+                          MT9P031_GLOBAL_GAIN_MAX, 1, MT9P031_GLOBAL_GAIN_DEF);
+        v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
+                          V4L2_CID_HFLIP, 0, 1, 1, 0);
+        v4l2_ctrl_new_std(&mt9p031->ctrls, &mt9p031_ctrl_ops,
+                          V4L2_CID_VFLIP, 0, 1, 1, 0);
+
+
         v4l2_i2c_subdev_init(&mt9p031->subdev, client, &mt9p031_subdev_ops);
-        //mt9p031->subdev.internal_ops = &mt9p031_subdev_internal_ops;
-
-        mt9p031->pad.flags = MEDIA_PAD_FL_SOURCE;
-        ret = media_entity_init(&mt9p031->subdev.entity, 1, &mt9p031->pad, 0);
-        if (ret < 0)
-                goto done;
-
-        mt9p031->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
         mt9p031->crop.width = MT9P031_WINDOW_WIDTH_DEF;
         mt9p031->crop.height = MT9P031_WINDOW_HEIGHT_DEF;
         mt9p031->crop.left = MT9P031_COLUMN_START_DEF;
         mt9p031->crop.top = MT9P031_ROW_START_DEF;
 
-        if (mt9p031->model == MT9P031_MODEL_MONOCHROME){
-		csi_dev_dbg("Camera model is MT9P031_MODEL_MONOCHROME\n");
-                mt9p031->format.code = V4L2_MBUS_FMT_Y12_1X12;
-	}
-        else{
-		csi_dev_dbg("Camera model is MT9P031_MODEL_COLOR\n");
-                mt9p031->format.code = V4L2_MBUS_FMT_SGRBG12_1X12;
-	}
+        mt9p031->format.code = V4L2_MBUS_FMT_Y8_1X8;
 
         mt9p031->format.width = MT9P031_WINDOW_WIDTH_DEF;
         mt9p031->format.height = MT9P031_WINDOW_HEIGHT_DEF;
@@ -1317,11 +1511,6 @@ static int mt9p031_probe(struct i2c_client *client,
         mt9p031->format.colorspace = V4L2_COLORSPACE_SRGB;
 
 done:
-        if (ret < 0) {
-                v4l2_ctrl_handler_free(&mt9p031->ctrls);
-                media_entity_cleanup(&mt9p031->subdev.entity);
-        }
-
         return ret;
 }
 
@@ -1330,11 +1519,8 @@ static int mt9p031_remove(struct i2c_client *client)
 	csi_dev_dbg("%s: called!\n",__func__);
         struct v4l2_subdev *subdev = i2c_get_clientdata(client);
         struct mt9p031 *mt9p031 = to_mt9p031(subdev);
-
-        v4l2_ctrl_handler_free(&mt9p031->ctrls);
         v4l2_device_unregister_subdev(subdev);
-        media_entity_cleanup(&subdev->entity);
-
+		kfree(mt9p031);
         return 0;
 }
 

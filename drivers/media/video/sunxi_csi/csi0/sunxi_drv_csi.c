@@ -1104,6 +1104,17 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 	csi_dbg(0,"pix->width=%d\n",f->fmt.pix.width);
 	csi_dbg(0,"pix->height=%d\n",f->fmt.pix.height);
 
+	//save current format info
+	dev->fmt = csi_fmt;
+	dev->vb_vidq.field = f->fmt.pix.field;
+	dev->width  = f->fmt.pix.width;
+	dev->height = f->fmt.pix.height;
+
+	//set format
+	dev->csi_mode.output_fmt = dev->fmt->output_fmt;
+	dev->csi_mode.input_fmt = dev->fmt->input_fmt;
+	dev->csi_mode.field_sel = dev->fmt->csi_field;
+
 	return 0;
 }
 
@@ -1553,6 +1564,45 @@ static int vidioc_s_ctrl(struct file *file, void *priv,
 
 	return ret;
 }
+static int vidioc_g_ext_ctrls(struct file *file, void *priv,
+			 struct v4l2_ext_controls *ctrl)
+{
+	printk("%s: called!\n",__func__);
+	struct csi_dev *dev = video_drvdata(file);
+	int ret;
+
+	ret = v4l2_subdev_call(dev->sd,core,g_ext_ctrls,ctrl);
+	if (ret < 0)
+		csi_err("v4l2 sub device g_ext_ctrl error!\n");
+
+	return ret;
+}
+
+
+static int vidioc_s_ext_ctrls(struct file *file, void *priv,
+				struct v4l2_ext_controls *ctrl)
+{
+	struct csi_dev *dev = video_drvdata(file);
+	//struct v4l2_query_ext_ctrl qc;
+	int ret;
+
+	/*qc.id = ctrl->id;
+	ret = vidioc_query_ext_ctrl(file, priv, &qc);
+	if (ret < 0) {
+		printk("ignore unknown ext control 0x%X\n", qc.id);
+		return ret;
+	}
+
+	if (ctrl->value < qc.minimum || ctrl->value > qc.maximum) {
+		return -ERANGE;
+	}*/
+
+	ret = v4l2_subdev_call(dev->sd,core,s_ext_ctrls,ctrl);
+	if (ret < 0)
+		csi_err("v4l2 sub device s_ext_ctrl error!\n");
+
+	return ret;
+}
 
 static int vidioc_g_parm(struct file *file, void *priv,
 			 struct v4l2_streamparm *parms)
@@ -1579,7 +1629,28 @@ static int vidioc_s_parm(struct file *file, void *priv,
 
 	return ret;
 }
+static int vidioc_g_crop(struct file *file, void *priv,
+			 struct v4l2_crop *crop)
+{
+	struct csi_dev *dev = video_drvdata(file);
+	int ret;
+	ret = v4l2_subdev_call(dev->sd, video, g_crop, crop);
+	if (ret < 0)
+		csi_err("v4l2 sub device g_crop error!\n");
+	return ret;
+}
 
+static int vidioc_s_crop(struct file *file, void *priv, struct v4l2_crop *crop)
+{
+	struct csi_dev *dev = video_drvdata(file);
+	int ret;
+
+	ret = v4l2_subdev_call(dev->sd, video, s_crop, crop);
+	if (ret < 0)
+		csi_err("v4l2 sub device s_crop error!\n");
+
+	return ret;
+}
 
 static ssize_t csi_read(struct file *file, char __user *data, size_t count, loff_t *ppos)
 {
@@ -1687,6 +1758,8 @@ static int csi_open(struct file *file)
 
 	dev->opened = 1;
 	dev->fmt = &formats[5]; //default format
+	dev->width = 640;
+	dev->height = 480;
 	return 0;
 }
 
@@ -1782,8 +1855,12 @@ static const struct v4l2_ioctl_ops csi_ioctl_ops = {
 	.vidioc_queryctrl         = vidioc_queryctrl,
 	.vidioc_g_ctrl            = vidioc_g_ctrl,
 	.vidioc_s_ctrl            = vidioc_s_ctrl,
+	.vidioc_g_ext_ctrls		= vidioc_g_ext_ctrls,
+	.vidioc_s_ext_ctrls		= vidioc_s_ext_ctrls,
 	.vidioc_g_parm		 			  = vidioc_g_parm,
 	.vidioc_s_parm		  			= vidioc_s_parm,
+    .vidioc_g_crop			= vidioc_g_crop,
+    .vidioc_s_crop			= vidioc_s_crop,
 
 #ifdef CONFIG_VIDEO_V4L1_COMPAT
 	.vidiocgmbuf              = vidiocgmbuf,

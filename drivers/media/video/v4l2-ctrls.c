@@ -505,6 +505,25 @@ const char *v4l2_ctrl_get_name(u32 id)
 	case V4L2_CID_MIN_BUFFERS_FOR_CAPTURE:	return "Min Number of Capture Buffers";
 	case V4L2_CID_MIN_BUFFERS_FOR_OUTPUT:	return "Min Number of Output Buffers";
 	case V4L2_CID_ALPHA_COMPONENT:		return "Alpha Component";
+	case V4L2_CID_BLC_AUTO:			return "BLC Auto";
+	case V4L2_CID_BLC_TARGET_LEVEL:		return "BLC Target Level";
+	case V4L2_CID_BLC_ANALOG_OFFSET:	return "BLC Analog Offset";
+	case V4L2_CID_BLC_DIGITAL_OFFSET:	return "BLC Digital Offset";
+	case V4L2_CID_TEST_PATTERN:		return "Test Pattern";
+	case V4L2_CID_PIXEL_RATE:		return "Pixel Rate Div";
+	case V4L2_CID_OVERCLOCK_CAM:		return "Overclock Camera";
+	case V4L2_CID_SNAPSHOT_ENABLED:		return "Snapshot Enabled";
+	case V4L2_CID_GLOBAL_RESET:		return "Global Reset";
+	case V4L2_CID_BULB_EXPOSURE:		return "Bulb Exposure";
+	case V4L2_CID_SNAPSHOT_TRIGGER:		return "Trigger Snapshot";
+	case V4L2_CID_SNAPSHOT_TRIGGER_INV:	return "Invert Snapshot Trigger";
+	case V4L2_CID_STROBE_ENABLED:		return "Strobe Enabled";
+	case V4L2_CID_STROBE_INV:		return "Strobe Invert";
+	case V4L2_CID_STROBE_START:		return "Strobe Start";
+	case V4L2_CID_STROBE_END:		return "Strobe End";
+        case V4L2_CID_REG_RW_ADDR:              return "REG Read/Write Address";
+        case V4L2_CID_REG_RW:               	return "REG Read/Write Exec";
+
 	/* Add camera flash light by raymonxiu */
 	case V4L2_CID_CAMERA_FLASH_MODE:	return "FlashLight Mode";
 
