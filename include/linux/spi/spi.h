@@ -26,7 +26,8 @@
 
 /*
  * INTERFACES between SPI master-side drivers and SPI infrastructure.
- * (There's no SPI slave support for Linux yet...)
+ * SPI Slave Support added : It uses few new APIs and
+ * a new spi_slave struct
  */
 extern struct bus_type spi_bus_type;
 
@@ -34,6 +35,7 @@ extern struct bus_type spi_bus_type;
  * struct spi_device - Master side proxy for an SPI slave device
  * @dev: Driver model representation of the device.
  * @master: SPI controller used with the device.
+ *  @slave: SPI Slave Controller used with the device
  * @max_speed_hz: Maximum clock rate to be used with this chip
  *	(on this board); may be changed by the device's driver.
  *	The spi_transfer.speed_hz can override this for each transfer.
@@ -70,6 +72,7 @@ extern struct bus_type spi_bus_type;
 struct spi_device {
 	struct device		dev;
 	struct spi_master	*master;
+	struct spi_slave	*slave;
 	u32			max_speed_hz;
 	u8			chip_select;
 	u8			mode;
@@ -341,6 +344,9 @@ struct spi_master {
 	/* called on release() to free memory provided by spi_master */
 	void			(*cleanup)(struct spi_device *spi);
 
+       int                     (*lock_bus)(struct spi_device *spi);
+       int                     (*unlock_bus)(struct spi_device *spi);
+
 	/*
 	 * These hooks are for drivers that want to use the generic
 	 * master transfer queueing mechanism. If these are used, the
@@ -363,30 +369,84 @@ struct spi_master {
 				    struct spi_message *mesg);
 	int (*unprepare_transfer_hardware)(struct spi_master *master);
 };
+/**
+ * struct spi_slave - interface to SPI Slave Controller
+ *  <at> dev: device interface to this driver
+ *  <at> bus_num: board-specific (and often SOC-specific) identifier for a
+ *	given SPI controller.
+ *  <at> num_chipselect: chipselects are used to distinguish individual
+ *	SPI slaves, and are numbered from zero to num_chipselects.
+ *	each slave has a chipselect signal, but it's common that not
+ *	every chipselect is connected to a slave.
+ *  <at> setup: updates the device mode and clocking records used by a
+ *	device's SPI controller; protocol code may call this.  This
+ *	must fail if an unrecognized or unsupported mode is requested.
+ *	It's always safe to call this unless transfers are pending on
+ *	the device whose settings are being modified.
+ *  <at> transfer: adds a message to the controller's transfer queue.
+ *  <at> cleanup: frees controller-specific state
+ */
+struct spi_slave {
+       struct device   dev;
+       struct list_head list;
+       s16                     bus_num;
+       u16                     num_chipselect;
 
+       /* lock and mutex for SPI bus locking */
+       spinlock_t              bus_lock_spinlock;
+       struct mutex            bus_lock_mutex;
+
+       /* flag indicating that the SPI bus is locked for exclusive use */
+       bool                    bus_lock_flag;
+
+       int                     (*setup)(struct spi_device *spi);
+
+       int                     (*transfer)(struct spi_device *spi,
+                                               struct spi_message *mesg);
+
+       void                    (*cleanup)(struct spi_device *spi);
+
+       int                     (*lock_bus)(struct spi_device *spi);
+       int                     (*unlock_bus)(struct spi_device *spi);
+};
 static inline void *spi_master_get_devdata(struct spi_master *master)
 {
 	return dev_get_drvdata(&master->dev);
 }
-
+static inline void *spi_slave_get_devdata(struct spi_slave *slave)
+{
+	return dev_get_drvdata(&slave->dev);
+}
 static inline void spi_master_set_devdata(struct spi_master *master, void *data)
 {
 	dev_set_drvdata(&master->dev, data);
 }
-
+static inline void spi_slave_set_devdata(struct spi_slave *slave, void *data)
+{
+	dev_set_drvdata(&slave->dev, data);
+}
 static inline struct spi_master *spi_master_get(struct spi_master *master)
 {
 	if (!master || !get_device(&master->dev))
 		return NULL;
 	return master;
 }
-
+static inline struct spi_slave *spi_slave_get(struct spi_slave *slave)
+{
+	if (!slave || !get_device(&slave->dev))
+		return NULL;
+	return slave;
+}
 static inline void spi_master_put(struct spi_master *master)
 {
 	if (master)
 		put_device(&master->dev);
 }
-
+static inline void spi_slave_put(struct spi_slave *slave)
+{
+	if (slave)
+		put_device(&slave->dev);
+}
 /* PM calls that need to be issued by the driver */
 extern int spi_master_suspend(struct spi_master *master);
 extern int spi_master_resume(struct spi_master *master);
@@ -398,12 +458,18 @@ extern void spi_finalize_current_message(struct spi_master *master);
 /* the spi driver core manages memory for the spi_master classdev */
 extern struct spi_master *
 spi_alloc_master(struct device *host, unsigned size);
+extern struct spi_device *
+spi_alloc_slave_device(struct spi_slave *slave);
 
 extern int spi_register_master(struct spi_master *master);
 extern void spi_unregister_master(struct spi_master *master);
 
 extern struct spi_master *spi_busnum_to_master(u16 busnum);
+extern struct spi_slave *
+spi_alloc_slave(struct device *host, unsigned size);
 
+extern int spi_register_slave(struct spi_slave *slave);
+extern void spi_unregister_slave(struct spi_slave *slave);
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -841,11 +907,21 @@ spi_register_board_info(struct spi_board_info const *info, unsigned n)
 extern struct spi_device *
 spi_alloc_device(struct spi_master *master);
 
+extern struct spi_device *
+spi_alloc_slave_device(struct spi_slave *slave);
+
 extern int
 spi_add_device(struct spi_device *spi);
 
+extern int
+spi_add_slave_device(struct spi_device *spi);
+
+
 extern struct spi_device *
 spi_new_device(struct spi_master *, struct spi_board_info *);
+
+extern struct spi_device *
+spi_slave_new_device(struct spi_slave *, struct spi_board_info *);
 
 static inline void
 spi_unregister_device(struct spi_device *spi)

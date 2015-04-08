@@ -39,10 +39,23 @@ static void spidev_release(struct device *dev)
 	struct spi_device	*spi = to_spi_device(dev);
 
 	/* spi masters may cleanup for released devices */
-	if (spi->master->cleanup)
-		spi->master->cleanup(spi);
+#ifdef	CONFIG_SPI_SLAVE
+       if (spi->master) {
+#endif
+               /* spi masters may cleanup for released devices */
+               if (spi->master->cleanup)
+                       spi->master->cleanup(spi);
 
-	spi_master_put(spi->master);
+               spi_master_put(spi->master);
+#ifdef	CONFIG_SPI_SLAVE
+       } else {
+               /* spi slave controller */
+               if (spi->slave->cleanup)
+                       spi->slave->cleanup(spi);
+
+               spi_slave_put(spi->slave);
+       }
+#endif
 	kfree(spi);
 }
 
@@ -282,6 +295,9 @@ struct boardinfo {
 
 static LIST_HEAD(board_list);
 static LIST_HEAD(spi_master_list);
+#ifdef	CONFIG_SPI_SLAVE
+static LIST_HEAD(spi_slave_list);
+#endif
 
 /*
  * Used to protect add/del opertion for board_info list and
@@ -322,14 +338,59 @@ struct spi_device *spi_alloc_device(struct spi_master *master)
 	}
 
 	spi->master = master;
-	spi->dev.parent = &master->dev;
+#ifdef	CONFIG_SPI_SLAVE
+	spi->slave = NULL;
+#endif
+	spi->dev.parent = dev;
 	spi->dev.bus = &spi_bus_type;
 	spi->dev.release = spidev_release;
 	device_initialize(&spi->dev);
 	return spi;
 }
 EXPORT_SYMBOL_GPL(spi_alloc_device);
+#ifdef	CONFIG_SPI_SLAVE
+/*
+* spi_alloc_slave_device - Allocate a new SPI device
+*  <at> slave: Controller to which device is connected
+* Context: can sleep
+*
+* Allows a driver to allocate and initialize a spi_device without
+* registering it immediately.  This allows a driver to directly
+* fill the spi_device with device parameters before calling
+* spi_add_slave_device() on it.
+*
+* Caller is responsible to call spi_add_slave_device() on the returned
+* spi_device structure to add it to the SPI slave.  If the caller
+* needs to discard the spi_device without adding it, then it should
+* call spi_dev_slave_put() on it.
+* Returns a pointer to the new device, or NULL.
+*/
+struct spi_device *spi_alloc_slave_device(struct spi_slave *slave)
+{
+	struct spi_device	*spi_s;
+	struct device		*dev = slave->dev.parent;
 
+	if (!spi_slave_get(slave))
+		return NULL;
+
+	spi_s = kzalloc(sizeof *spi_s, GFP_KERNEL);
+	if (!spi_s) {
+		dev_err(dev, "cannot alloc spi_slave_device\n");
+		spi_slave_put(slave);
+		return NULL;
+	}
+
+	spi_s->slave = slave;
+	spi_s->master = NULL;
+	spi_s->dev.parent = dev;
+	spi_s->dev.bus = &spi_bus_type;
+	spi_s->dev.release = spidev_release;
+	device_initialize(&spi_s->dev);
+	return spi_s;
+}
+EXPORT_SYMBOL_GPL(spi_alloc_slave_device);
+
+#endif
 /**
  * spi_add_device - Add spi_device allocated with spi_alloc_device
  * @spi: spi_device to register
@@ -342,23 +403,34 @@ EXPORT_SYMBOL_GPL(spi_alloc_device);
 int spi_add_device(struct spi_device *spi)
 {
 	static DEFINE_MUTEX(spi_add_lock);
-	struct device *dev = spi->master->dev.parent;
+	struct device *dev = NULL;
 	struct device *d;
 	int status;
 
-	/* Chipselects are numbered 0..max; validate. */
-	if (spi->chip_select >= spi->master->num_chipselect) {
-		dev_err(dev, "cs%d >= max %d\n",
-			spi->chip_select,
-			spi->master->num_chipselect);
-		return -EINVAL;
-	}
+#ifdef	CONFIG_SPI_SLAVE
+	if (spi->master) {
+#endif
+		dev = spi->master->dev.parent;
+		/* Chipselects are numbered 0..max; validate. */
+		if (spi->chip_select >= spi->master->num_chipselect) {
+			dev_err(dev, "cs%d >= max %d\n",
+				spi->chip_select,
+				spi->master->num_chipselect);
+			return -EINVAL;
+		}
 
-	/* Set the bus ID string */
-	dev_set_name(&spi->dev, "%s.%u", dev_name(&spi->master->dev),
-			spi->chip_select);
-
-
+               /* Set the bus ID string */
+               dev_set_name(&spi->dev, "%s.%u", dev_name(&spi->master->dev),
+                               spi->chip_select);
+#ifdef	CONFIG_SPI_SLAVE
+       } else {
+               /* Slave Controller */
+               dev = spi->slave->dev.parent;
+               /* Set the bus ID string */
+               dev_set_name(&spi->dev, "%s.%u", dev_name(&spi->slave->dev),
+                               spi->chip_select);
+       }
+#endif
 	/* We need to make sure there's no other device with this
 	 * chipselect **BEFORE** we call setup(), else we'll trash
 	 * its configuration.  Lock against concurrent add() calls.
@@ -450,7 +522,54 @@ struct spi_device *spi_new_device(struct spi_master *master,
 	return proxy;
 }
 EXPORT_SYMBOL_GPL(spi_new_device);
+#ifdef	CONFIG_SPI_SLAVE
+/**
+* spi_slave_new_device - instantiate one new SPI device
+*  <at> slave: Controller to which device is connected
+*  <at> chip: Describes the SPI device
+* Context: can sleep
+*
+* On typical mainboards, this is purely internal; and it's not needed
+* after board init creates the hard-wired devices.  Some development
+* platforms may not be able to use spi_register_board_info though, and
+* this is exported so that for example a USB or parport based adapter
+* driver could add devices (which it would learn about out-of-band).
+*
+* Returns the new device, or NULL.
+*/
+struct spi_device *spi_slave_new_device(struct spi_slave *slave,
+               struct spi_board_info *chip)
+{
+       struct spi_device       *proxy_slave;
+       int                     status;
 
+       proxy_slave = spi_alloc_slave_device(slave);
+
+       if (!proxy_slave)
+               return NULL;
+
+       WARN_ON(strlen(chip->modalias) >= sizeof(proxy_slave->modalias));
+
+       proxy_slave->chip_select = chip->chip_select;
+       proxy_slave->max_speed_hz = chip->max_speed_hz;
+       proxy_slave->mode = chip->mode;
+       proxy_slave->irq = chip->irq;
+       strlcpy(proxy_slave->modalias, chip->modalias,
+                       sizeof(proxy_slave->modalias));
+       proxy_slave->dev.platform_data = (void *) chip->platform_data;
+       proxy_slave->controller_data = chip->controller_data;
+       proxy_slave->controller_state = NULL;
+
+       status = spi_add_device(proxy_slave);
+       if (status < 0) {
+               spi_dev_put(proxy_slave);
+               return NULL;
+       }
+
+       return proxy_slave;
+}
+EXPORT_SYMBOL_GPL(spi_slave_new_device);
+#endif
 static void spi_match_master_to_boardinfo(struct spi_master *master,
 				struct spi_board_info *bi)
 {
@@ -464,7 +583,21 @@ static void spi_match_master_to_boardinfo(struct spi_master *master,
 		dev_err(master->dev.parent, "can't create new device for %s\n",
 			bi->modalias);
 }
+#ifdef	CONFIG_SPI_SLAVE
+static void spi_match_slave_to_boardinfo(struct spi_slave *slave,
+               struct spi_board_info *bi)
+{
+       struct spi_device *dev;
 
+       if (slave->bus_num != bi->bus_num)
+               return;
+
+       dev = spi_slave_new_device(slave, bi);
+       if (!dev)
+               dev_err(slave->dev.parent, "can't create new device for %s\n",
+                               bi->modalias);
+}
+#endif
 /**
  * spi_register_board_info - register SPI devices for a given board
  * @info: array of chip descriptors
@@ -938,7 +1071,82 @@ done:
 	return status;
 }
 EXPORT_SYMBOL_GPL(spi_register_master);
+#ifdef	CONFIG_SPI_SLAVE
+/**
+ * spi_register_slave - register SPI slave controller
+ * @master: initialized master, originally from spi_alloc_slave()
+ * Context: can sleep
+ *
+ * SPI slave controllers connect to their drivers using some non-SPI bus,
+ * such as the platform bus.  The final stage of probe() in that code
+ * includes calling spi_register_slave() to hook up to this SPI bus glue.
+ *
+ * SPI controllers use board specific (often SOC specific) bus numbers,
+ * and board-specific addressing for SPI devices combines those numbers
+ * with chip select numbers.  Since SPI does not directly support dynamic
+ * device identification, boards need configuration tables telling which
+ * chip is at which address.
+ *
+ * This must be called from context that can sleep.  It returns zero on
+ * success, else a negative error code (dropping the slave's refcount).
+ * After a successful return, the caller is responsible for calling
+ * spi_unregister_slave().
+ */
+int spi_register_slave(struct spi_slave *slave)
+{
+       static atomic_t         dyn_bus_id = ATOMIC_INIT((1<<15) - 1);
+       struct device           *dev = slave->dev.parent;
+       struct boardinfo        *bi;
+       int                     status = -ENODEV;
+       int                     dynamic = 0;
 
+       if (!dev)
+               return -ENODEV;
+
+       /* even if it's just one always-selected device, there must
+        * be at least one chipselect
+        */
+       if (slave->num_chipselect == 0)
+               return -EINVAL;
+
+       /* convention:  dynamically assigned bus IDs count down from the max */
+       if (slave->bus_num < 0) {
+               /* FIXME switch to an IDR based scheme, something like
+                * I2C now uses, so we can't run out of "dynamic" IDs
+                */
+               slave->bus_num = atomic_dec_return(&dyn_bus_id);
+               dynamic = 1;
+       }
+
+       spin_lock_init(&slave->bus_lock_spinlock);
+       mutex_init(&slave->bus_lock_mutex);
+       slave->bus_lock_flag = 0;
+
+       /* register the device, then userspace will see it.
+        * registration fails if the bus ID is in use.
+        */
+       dev_set_name(&slave->dev, "spi%u", slave->bus_num);
+       status = device_add(&slave->dev);
+       if (status < 0)
+               goto done;
+       dev_dbg(dev, "registered slave %s%s\n", dev_name(&slave->dev),
+                       dynamic ? " (dynamic)" : "");
+
+       mutex_lock(&board_lock);
+       list_add_tail(&slave->list, &spi_slave_list);
+       list_for_each_entry(bi, &board_list, list)
+               spi_match_slave_to_boardinfo(slave, &bi->board_info);
+       mutex_unlock(&board_lock);
+
+       status = 0;
+
+       /* Register devices from the device tree */
+       of_register_spi_devices(slave); //FIXME
+done:
+       return status;
+}
+EXPORT_SYMBOL_GPL(spi_register_slave);
+#endif
 static int __unregister(struct device *dev, void *null)
 {
 	spi_unregister_device(to_spi_device(dev));
@@ -972,7 +1180,26 @@ void spi_unregister_master(struct spi_master *master)
 	device_unregister(&master->dev);
 }
 EXPORT_SYMBOL_GPL(spi_unregister_master);
+#ifdef	CONFIG_SPI_SLAVE
+/**
+  +* spi_unregister_slave - unregister SPI slave controller
+  +* @master: the slave being unregistered
+  +* Context: can sleep
+  +*
+  +* This call is used only by SPI slave controller drivers, which are the
+  +* only ones directly touching chip registers.
+  +*
+  +* This must be called from context that can sleep.
+  +*/
+void spi_unregister_slave(struct spi_slave *slave)
+{
+       int dummy;
 
+       dummy = device_for_each_child(slave->dev.parent, &slave->dev, __unregister);
+       device_unregister(&slave->dev);
+}
+EXPORT_SYMBOL_GPL(spi_unregister_slave);
+#endif
 int spi_master_suspend(struct spi_master *master)
 {
 	int ret;
@@ -1037,6 +1264,95 @@ struct spi_master *spi_busnum_to_master(u16 bus_num)
 }
 EXPORT_SYMBOL_GPL(spi_busnum_to_master);
 
+#ifdef CONFIG_SPI_SLAVE
+
+
+static void spi_slave_scan_boardinfo(struct spi_slave *slave)
+{
+	struct boardinfo	*bi;
+
+	mutex_lock(&board_lock);
+	/*list_for_each_entry(bi, &board_list, list) {
+		struct spi_board_info	*chip = &bi->board_info;
+		unsigned		n;
+
+		for (n = bi->n_board_info; n > 0; n--, chip++) {
+			if (chip->bus_num != slave->bus_num)
+				continue;
+			/ NOTE: this relies on spi_new_device to
+			 * issue diagnostics when given bogus inputs
+			 /
+			(void) spi_slave_new_device(slave, chip);
+
+		}
+	}*/
+	//memcpy(&bi->board_info, info, sizeof(*info));
+	mutex_lock(&board_lock);
+	list_add_tail(&bi->list, &board_list);
+	list_for_each_entry(slave, &spi_slave_list, list)
+		(void) spi_slave_new_device(slave, &bi->board_info);
+	mutex_unlock(&board_lock);
+}
+
+static void spi_slave_release(struct device *dev)
+{
+	struct spi_slave *slave;
+
+	slave = container_of(dev, struct spi_slave, dev);
+	kfree(slave);
+}
+
+static struct class spi_slave_class = {
+	.name		= "spi_slave",
+	.owner		= THIS_MODULE,
+	.dev_release	= spi_slave_release,
+};
+
+
+
+
+
+/**
+* spi_alloc_slave - allocate SPI slave controller
+*  <at> dev: the controller, possibly using the platform_bus
+*  <at> size: how much zeroed driver-private data to allocate; the pointer to this
+*	memory is in the driver_data field of the returned device,
+*	accessible with spi_slave_get_devdata().
+* Context: can sleep
+*
+* This call is used only by SPI master controller drivers, which are the
+* only ones directly touching chip registers.  It's how they allocate
+* an spi_master structure, prior to calling spi_register_slave().
+*
+* This must be called from context that can sleep.  It returns the SPI
+* master structure on success, else NULL.
+*
+* The caller is responsible for assigning the bus number and initializing
+* the master's methods before calling spi_register_slave(); and (after errors
+* adding the device) calling spi_slave_put() to prevent a memory leak.
+*/
+struct spi_slave *spi_alloc_slave(struct device *dev, unsigned size)
+{
+       struct spi_slave        *slave;
+
+       if (!dev)
+               return NULL;
+
+       slave = kzalloc(size + sizeof *slave, GFP_KERNEL);
+       if (!slave)
+               return NULL;
+
+       device_initialize(&slave->dev);
+       slave->dev.class = &spi_slave_class;
+       slave->dev.parent = get_device(dev);
+       spi_slave_set_devdata(slave, &slave[1]);
+
+       return slave;
+}
+EXPORT_SYMBOL_GPL(spi_alloc_slave);
+
+#endif
+
 
 /*-------------------------------------------------------------------------*/
 
@@ -1070,18 +1386,28 @@ int spi_setup(struct spi_device *spi)
 	/* help drivers fail *cleanly* when they need options
 	 * that aren't supported with their current master
 	 */
-	bad_bits = spi->mode & ~spi->master->mode_bits;
-	if (bad_bits) {
-		dev_err(&spi->dev, "setup: unsupported mode bits %x\n",
-			bad_bits);
-		return -EINVAL;
+#ifdef	CONFIG_SPI_SLAVE
+	if (spi->master){
+#endif
+		bad_bits = spi->mode & ~spi->master->mode_bits;
+		if (bad_bits) {
+			dev_err(&spi->dev, "setup: unsupported mode bits %x\n",
+				bad_bits);
+			return -EINVAL;
+		}
+#ifdef	CONFIG_SPI_SLAVE
 	}
-
+#endif
 	if (!spi->bits_per_word)
 		spi->bits_per_word = 8;
-
-	status = spi->master->setup(spi);
-
+#ifdef	CONFIG_SPI_SLAVE
+	if (spi->master)
+#endif
+	           status = spi->master->setup(spi);
+#ifdef	CONFIG_SPI_SLAVE
+       else
+               status = spi->slave->setup(spi);
+#endif
 	dev_dbg(&spi->dev, "setup mode %d, %s%s%s%s"
 				"%u bits/w, %u Hz max --> %d\n",
 			(int) (spi->mode & (SPI_CPOL | SPI_CPHA)),
@@ -1098,31 +1424,41 @@ EXPORT_SYMBOL_GPL(spi_setup);
 
 static int __spi_async(struct spi_device *spi, struct spi_message *message)
 {
-	struct spi_master *master = spi->master;
+#ifdef	CONFIG_SPI_SLAVE
+	if (spi->master) {
+#endif
+               /* Half-duplex links include original MicroWire, and ones with
+                * only one data pin like SPI_3WIRE (switches direction) or where
+                * either MOSI or MISO is missing.  They can also be caused by
+                * software limitations.
+                */
+               if ((spi->master->flags & SPI_MASTER_HALF_DUPLEX)
+                               || (spi->mode & SPI_3WIRE)) {
+                       struct spi_transfer *xfer;
+                       unsigned flags = spi->master->flags;
 
-	/* Half-duplex links include original MicroWire, and ones with
-	 * only one data pin like SPI_3WIRE (switches direction) or where
-	 * either MOSI or MISO is missing.  They can also be caused by
-	 * software limitations.
-	 */
-	if ((master->flags & SPI_MASTER_HALF_DUPLEX)
-			|| (spi->mode & SPI_3WIRE)) {
-		struct spi_transfer *xfer;
-		unsigned flags = master->flags;
-
-		list_for_each_entry(xfer, &message->transfers, transfer_list) {
-			if (xfer->rx_buf && xfer->tx_buf)
-				return -EINVAL;
-			if ((flags & SPI_MASTER_NO_TX) && xfer->tx_buf)
-				return -EINVAL;
-			if ((flags & SPI_MASTER_NO_RX) && xfer->rx_buf)
-				return -EINVAL;
+                       list_for_each_entry(xfer, &message->transfers, transfer_list) {
+                               if (xfer->rx_buf && xfer->tx_buf)
+                                       return -EINVAL;
+                               if ((flags & SPI_MASTER_NO_TX) && xfer->tx_buf)
+                                       return -EINVAL;
+                               if ((flags & SPI_MASTER_NO_RX) && xfer->rx_buf)
+                                       return -EINVAL;
+                       }
 		}
+#ifdef	CONFIG_SPI_SLAVE
 	}
-
+#endif
 	message->spi = spi;
 	message->status = -EINPROGRESS;
-	return master->transfer(spi, message);
+#ifdef	CONFIG_SPI_SLAVE
+	if (spi->master)
+#endif
+               return spi->master->transfer(spi, message);
+#ifdef	CONFIG_SPI_SLAVE
+       else
+               return spi->slave->transfer(spi, message);
+#endif
 }
 
 /**
@@ -1157,18 +1493,34 @@ static int __spi_async(struct spi_device *spi, struct spi_message *message)
 int spi_async(struct spi_device *spi, struct spi_message *message)
 {
 	struct spi_master *master = spi->master;
+#ifdef	CONFIG_SPI_SLAVE
+	struct spi_slave *slave = spi->slave;	
+#endif
 	int ret;
 	unsigned long flags;
+#ifdef	CONFIG_SPI_SLAVE
+	if(master!=NULL){
+#endif
+		spin_lock_irqsave(&master->bus_lock_spinlock, flags);
 
-	spin_lock_irqsave(&master->bus_lock_spinlock, flags);
+		if (master->bus_lock_flag)
+			ret = -EBUSY;
+		else
+			ret = __spi_async(spi, message);
 
-	if (master->bus_lock_flag)
-		ret = -EBUSY;
-	else
-		ret = __spi_async(spi, message);
+		spin_unlock_irqrestore(&master->bus_lock_spinlock, flags);
+#ifdef	CONFIG_SPI_SLAVE
+	}else{
+		spin_lock_irqsave(&slave->bus_lock_spinlock, flags);
 
-	spin_unlock_irqrestore(&master->bus_lock_spinlock, flags);
+		if (slave->bus_lock_flag)
+			ret = -EBUSY;
+		else
+			ret = __spi_async(spi, message);
 
+		spin_unlock_irqrestore(&slave->bus_lock_spinlock, flags);
+	}
+#endif
 	return ret;
 }
 EXPORT_SYMBOL_GPL(spi_async);
@@ -1459,6 +1811,11 @@ static int __init spi_init(void)
 	status = class_register(&spi_master_class);
 	if (status < 0)
 		goto err2;
+#ifdef	CONFIG_SPI_SLAVE
+	status = class_register(&spi_slave_class);
+	if (status < 0)
+		goto err2;
+#endif
 	return 0;
 
 err2:
