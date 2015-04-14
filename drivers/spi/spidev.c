@@ -578,7 +578,14 @@ static int __devinit spidev_probe(struct spi_device *spi)
 	struct spidev_data	*spidev;
 	int			status;
 	unsigned long		minor;
-
+	int bus_num;
+	if(spi->master){
+		bus_num = spi->master->bus_num;
+	}else if(spi->slave){
+		bus_num = spi->slave->bus_num;
+	}else{
+		printk("%s: SPI Error: could not determine master/slave.\n",__func__);
+	}
 	/* Allocate driver data */
 	spidev = kzalloc(sizeof(*spidev), GFP_KERNEL);
 	if (!spidev)
@@ -602,7 +609,7 @@ static int __devinit spidev_probe(struct spi_device *spi)
 		spidev->devt = MKDEV(SPIDEV_MAJOR, minor);
 		dev = device_create(spidev_class, &spi->dev, spidev->devt,
 				    spidev, "spidev%d.%d",
-				    spi->master->bus_num, spi->chip_select);
+				    bus_num, spi->chip_select);
 		status = IS_ERR(dev) ? PTR_ERR(dev) : 0;
 	} else {
 		dev_dbg(&spi->dev, "no minor number available!\n");
