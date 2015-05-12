@@ -45,5 +45,7 @@ config ADXRS450
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called adxrs450.
-
+config MTK_BMG160
+	depends on I2C
+        bool "BMG160 gyroscope for MediaTek package"
 endmenu
