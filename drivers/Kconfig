@@ -18,6 +18,8 @@ source "drivers/block/Kconfig"
 
 source "drivers/misc/Kconfig"
 
+source "drivers/sensors/Kconfig"
+
 source "drivers/ide/Kconfig"
 
 source "drivers/scsi/Kconfig"

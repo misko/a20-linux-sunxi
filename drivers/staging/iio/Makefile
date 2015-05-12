@@ -19,6 +19,8 @@ obj-$(CONFIG_IIO_DUMMY_EVGEN) += iio_dummy_evgen.o
 
 obj-$(CONFIG_IIO_ST_HWMON) += iio_hwmon.o
 
+obj-$(CONFIG_SENSORS_BMA2X2)	+= bstclass.o
+
 obj-y += accel/
 obj-y += adc/
 obj-y += addac/
