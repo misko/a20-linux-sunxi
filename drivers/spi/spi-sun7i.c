@@ -33,7 +33,8 @@
 #include <plat/sys_config.h>
 #include <mach/spi.h>
 
-#define SPI_DEBUG_LEVEL 3
+
+#define SPI_DEBUG_LEVEL 2
 
 #if (SPI_DEBUG_LEVEL == 1)
 #define spi_dbg(format,args...)     do {} while (0)
@@ -74,14 +75,12 @@ static void* __iomem gpio_addr = NULL;
 #define _Pn_DRV1(n) ( (n)*0x24 + 0x14 + gpio_addr )
 #define _Pn_PUL1(n) ( (n)*0x24 + 0x1C + gpio_addr )
 #endif
-#define SLAVE_BUS 1
-
 
 struct sunxi_spi {
 	struct platform_device *pdev;
 	struct spi_master *master;          /* kzalloc */
 #ifdef	CONFIG_SPI_SLAVE
-	struct spi_slave *slave;          /* kzalloc */
+	struct spi_slave *slave;
 #endif
 	void __iomem *base_addr;            /* register */
 	struct clk *hclk;                   /* ahb spi gating bit */
@@ -112,6 +111,7 @@ struct sunxi_spi {
 #define SPI_CHIP_SELECT_CS0 (0x01)
 #define SPI_CHIP_SELECT_CS1 (0x02)
 	int cs_bitmap;                      /* cs0- 0x1, cs1-0x2, cs0 & cs1-0x3. */
+	int is_slave;
 };
 static int get_busnum(struct sunxi_spi *aw_spi){
 	int bus_num;
@@ -124,7 +124,8 @@ static int get_busnum(struct sunxi_spi *aw_spi){
 	}else if(aw_spi->slave){
 		bus_num=aw_spi->slave->bus_num;
 	}else{
-		printk("%s: SPI Error: could not determine master/slave.\n",__func__);
+		spi_err("%s: SPI Error: could not determine master/slave.\n",__func__);
+		bus_num=-1;
 	}
 #endif
 	return bus_num;
@@ -253,21 +254,21 @@ void spi_restore_state(u32 master, void *base_addr)
 }
 
 /* set spi clock */
-void spi_set_clk(u32 spi_clk, u32 ahb_clk, void *base_addr)
+void spi_set_clk(u32 master, u32 spi_clk, u32 ahb_clk, void *base_addr)
 {
 	u32 reg_val = 0;
 	u32 N = 0;
 	u32 div_clk = (ahb_clk >> 1) / spi_clk;
 
 	reg_val = readl(base_addr + SPI_CLK_RATE_REG);
-
 	if (div_clk <= SPI_CLK_SCOPE) {
 		if (div_clk != 0) {
 			div_clk--;
 		}
 
 		reg_val &= ~SPI_CLKCTL_CDR2;
-		reg_val |= (div_clk | SPI_CLKCTL_DRS);
+		if(master == SPI_MASTER_MODE)
+			reg_val |= (div_clk | SPI_CLKCTL_DRS);
 	} else {
 		while (1) {
 			if (div_clk == 1) {
@@ -280,7 +281,6 @@ void spi_set_clk(u32 spi_clk, u32 ahb_clk, void *base_addr)
 		reg_val &= ~(SPI_CLKCTL_CDR1 | SPI_CLKCTL_DRS);
 		reg_val |= (N << 8);
 	}
-
 	writel(reg_val, base_addr + SPI_CLK_RATE_REG);
 }
 
@@ -717,11 +717,11 @@ static int sunxi_spi_check_cs(int cs_id, struct sunxi_spi *aw_spi)
 /* spi device on or off control */
 static void sunxi_spi_cs_control(struct spi_device *spi, bool on)
 {
-	struct sunxi_spi *aw_spi;
-	unsigned int cs;
 #ifdef	CONFIG_SPI_SLAVE
 	if(spi->master){
 #endif
+		struct sunxi_spi *aw_spi;
+		unsigned int cs;
 		aw_spi = spi_master_get_devdata(spi->master);
 		cs = 0;
 		if (aw_spi->cs_control) {
@@ -768,8 +768,8 @@ static int sunxi_spi_xfer_setup(struct spi_device *spi, struct spi_transfer *t)
 		bus_num = spi->slave->bus_num;
 		num_chipselect = spi->slave->num_chipselect;
 	}else {
-		aw_spi = NULL;
-		printk("%s: SPI Error: could not determine master/slave. line %d\n",__func__,__LINE__);
+		spi_err("%s: SPI Error: could not determine master/slave. line %d\n",__func__,__LINE__);
+		return -EINVAL;
 	}
 #endif
 	config = spi->controller_data; // allocate in the setup, and free in the cleanup
@@ -810,16 +810,20 @@ static int sunxi_spi_xfer_setup(struct spi_device *spi, struct spi_transfer *t)
 		if(config->max_speed_hz > SPI_MAX_FREQUENCY) {
 			return -EINVAL;
 		}
-		spi_set_clk(config->max_speed_hz, clk_get_rate(aw_spi->mclk), base_addr);
+		spi_set_clk(SPI_MASTER_MODE, config->max_speed_hz, clk_get_rate(aw_spi->mclk), base_addr);
 		/*
 		 *  master : set POL,PHA,SSOPL,LMTF,DDB,DHB; default: SSCTL=0,SMC=1,TBW=0.
 		 *  set bit width-default: 8 bits
 		 */
-		spi_config(1, spi->mode, base_addr);
+		spi_config(SPI_MASTER_MODE, spi->mode, base_addr);
 #ifdef	CONFIG_SPI_SLAVE
 	}else{
 		spi_set_slave(base_addr);
-		spi_config(0, spi->mode, base_addr);
+		if(config->max_speed_hz > SPI_MAX_FREQUENCY) {
+			return -EINVAL;
+		}
+		spi_set_clk(SPI_SLAVE_MODE, config->max_speed_hz, clk_get_rate(aw_spi->mclk), base_addr);
+		spi_config(SPI_SLAVE_MODE, spi->mode, base_addr);
 	}
 #endif
 
@@ -853,8 +857,8 @@ static int sunxi_spi_xfer(struct spi_device *spi, struct spi_transfer *t)
 		aw_spi = spi_slave_get_devdata(spi->slave);
 		bus_num = aw_spi->slave->bus_num;
 	}else {
-		aw_spi = NULL;
-		printk("%s: SPI Error: could not determine master/slave. line %d\n",__func__,__LINE__);
+		spi_err("%s: SPI Error: could not determine master/slave. line %d\n",__func__,__LINE__);
+		return -EINVAL;
 	}
 #endif
 	base_addr = aw_spi->base_addr;
@@ -1007,6 +1011,7 @@ static int sunxi_spi_xfer(struct spi_device *spi, struct spi_transfer *t)
 							     }
 						     }
 						     if (poll_time <= 0) {
+							if(aw_spi->master)
 							     spi_err("%s: spi%d cpu receive data time out\n", 
 									     __func__, bus_num);
 						     }
@@ -1024,6 +1029,7 @@ static int sunxi_spi_xfer(struct spi_device *spi, struct spi_transfer *t)
 
 						     while (spi_query_txfifo(base_addr) && (--poll_time > 0)); /* txFIFO counter */
 						     if (poll_time <= 0) {
+							if(aw_spi->master)
 							     spi_err("%s: spi%d cpu transfer data time out\n",
 									     __func__, bus_num);
 						     }
@@ -1046,7 +1052,8 @@ static int sunxi_spi_xfer(struct spi_device *spi, struct spi_transfer *t)
 
 							while (spi_query_txfifo(base_addr) && (--poll_time_tx > 0)); /* txFIFO counter */
 							if (poll_time_tx <= 0) {
-								spi_err("%s: spi%d cpu transfer data time out\n",
+								if(aw_spi->master)
+									spi_err("%s: spi%d cpu transfer data time out\n",
 										__func__, bus_num);
 								break;
 							}
@@ -1059,7 +1066,8 @@ static int sunxi_spi_xfer(struct spi_device *spi, struct spi_transfer *t)
 								}
 							}
 							if (poll_time_rx <= 0) {
-								spi_err("%s: spi%d cpu receive data time out\n",
+								if(aw_spi->master)
+									spi_err("%s: spi%d cpu receive data time out\n",
 										__func__, bus_num);
 							}
 							break;
@@ -1156,8 +1164,9 @@ static void sunxi_spi_work(struct work_struct *work)
 			/* accmulate the value in the message */
 			msg->actual_length += t->len;
 			/* may be need to delay */
-			if (t->delay_usecs)
+			if (t->delay_usecs){
 				udelay(t->delay_usecs);
+			}
 
 			/* if zero, keep active, otherwise deactived. */
 			if (cs_change)
@@ -1233,7 +1242,14 @@ static irqreturn_t sunxi_spi_handler(int irq, void *dev_id)
 				__func__, bus_num, status);
 		/* error process, release dma in the workqueue,should not be here */
 		spi_disable_irq(SPI_STAT_TC | SPI_STAT_ERR, base_addr);
-		spi_restore_state(1, base_addr);
+#ifdef	CONFIG_SPI_SLAVE
+	if(aw_spi->master)
+#endif
+		spi_restore_state(SPI_MASTER_MODE, base_addr);
+#ifdef	CONFIG_SPI_SLAVE
+	else
+		spi_restore_state(SPI_SLAVE_MODE, base_addr);
+#endif
 		aw_spi->result = -1;
 		complete(&aw_spi->done);
 		spi_err("%s: spi%d master mode error: txFIFO overflow/rxFIFO underrun or overflow\n",
@@ -1241,7 +1257,7 @@ static irqreturn_t sunxi_spi_handler(int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 
-	spi_dbg("%s: spi%d NONE comes\n", __func__, bus_num);
+	spi_dbg("%s: spi%d NONE comes! status=%d\n", __func__, bus_num, status);
 	return IRQ_NONE;
 }
 
@@ -1258,7 +1274,8 @@ static int sunxi_spi_transfer(struct spi_device *spi, struct spi_message *msg)
 	else if(spi->slave!=NULL){
 		aw_spi = spi_slave_get_devdata(spi->slave);
 	}else{
-		printk("%s:  SPI Error: could not determine master/slave.\n",__func__);
+		spi_err("%s:  SPI Error: could not determine master/slave.\n",__func__);
+		return -EINVAL;
 	}
 #endif
 	msg->actual_length = 0;
@@ -1294,7 +1311,8 @@ static int sunxi_spi_setup(struct spi_device *spi)
 		aw_spi = spi_slave_get_devdata(spi->slave);
 		bus_num=aw_spi->slave->bus_num;
 	}else{
-		printk("%s:  SPI Error: could not determine master/slave.\n",__func__);
+		spi_err("%s:  SPI Error: could not determine master/slave.\n",__func__);
+		return -EINVAL;
 	}
 #endif
 
@@ -1543,18 +1561,19 @@ static int sunxi_spi_hw_init(struct sunxi_spi *aw_spi)
 		 */
 		spi_set_master(base_addr);
 		sclk_freq  = clk_get_rate(aw_spi->mclk);
-		spi_set_clk(10000000, sclk_freq, base_addr);
+		spi_set_clk(SPI_MASTER_MODE, 10000000, sclk_freq, base_addr);
 		/*
 		 * 5. master : set POL,PHA,SSOPL,LMTF,DDB,DHB; default: SSCTL=0,SMC=1,TBW=0.
 		 * 6. set bit width-default: 8 bits	
 		 */
-		spi_config(1, SPI_MODE_0, base_addr);
+		spi_config(SPI_MASTER_MODE, SPI_MODE_0, base_addr);
 
 #ifdef	CONFIG_SPI_SLAVE
 	}else{
-		printk("%s: spi slave mode!\n",__func__);
 		spi_set_slave(base_addr);
-		spi_config(0, SPI_MODE_0, base_addr);
+		sclk_freq  = clk_get_rate(aw_spi->mclk);
+		spi_set_clk(SPI_SLAVE_MODE, 10000000, sclk_freq, base_addr);
+		spi_config(SPI_SLAVE_MODE, SPI_MODE_0, base_addr);
 	}
 #endif
 	/* 7. manual control the chip select */
@@ -1572,12 +1591,13 @@ static int sunxi_spi_hw_exit(struct sunxi_spi *aw_spi)
 
 	return 0;
 }
-
+static struct spi_board_info *spi_boards = NULL;
 static int __init sunxi_spi_probe(struct platform_device *pdev)
 {
 	struct resource *mem_res, *dma_res_rx, *dma_res_tx;
 	struct sunxi_spi *aw_spi;
 	struct sunxi_spi_platform_data *pdata;
+	struct spi_board_info* board;
 	struct spi_master *master;
 #ifdef	CONFIG_SPI_SLAVE
 	struct spi_slave *slave;
@@ -1585,6 +1605,7 @@ static int __init sunxi_spi_probe(struct platform_device *pdev)
 	int ret = 0, err = 0, irq;
 	int cs_bitmap = 0;
 	int bus_num;
+	board = &spi_boards[pdev->id];
 
 	if (pdev->id < 0) {
 		spi_err("%s: invalid platform device id: %d\n", __func__, pdev->id);
@@ -1627,7 +1648,7 @@ static int __init sunxi_spi_probe(struct platform_device *pdev)
 		return -ENXIO;
 	}
 #ifdef	CONFIG_SPI_SLAVE
-	if(pdev->id!=SLAVE_BUS){
+	if(!board->is_slave){
 #endif
 		/* create spi master */
 		master = spi_alloc_master(&pdev->dev, sizeof(struct sunxi_spi));
@@ -1645,7 +1666,6 @@ static int __init sunxi_spi_probe(struct platform_device *pdev)
 		aw_spi->slave = NULL;
 	}else{
 		/* create spi slave */
-		printk("%s: spi slave mode!\n",__func__);
 		master = NULL;
 		slave = spi_alloc_slave(&pdev->dev, sizeof(struct sunxi_spi));
 		if (slave == NULL) {
@@ -1677,8 +1697,9 @@ static int __init sunxi_spi_probe(struct platform_device *pdev)
 	aw_spi->busy            = SPI_FREE;
 	aw_spi->duplex_flag     = DUPLEX_NULL;
 	bus_num = pdev->id;
+	aw_spi->is_slave	= pdata->is_slave;
 #ifdef	CONFIG_SPI_SLAVE
-	if(pdev->id!=SLAVE_BUS) {
+	if(!board->is_slave) {
 #endif
 		master->bus_num         = bus_num;
 		master->setup           = sunxi_spi_setup;
@@ -1696,7 +1717,6 @@ static int __init sunxi_spi_probe(struct platform_device *pdev)
 		}
 #ifdef	CONFIG_SPI_SLAVE
 	}else{
-		printk("%s: spi slave mode!\n",__func__);
 		slave->bus_num         = bus_num;
 		slave->setup           = sunxi_spi_setup;
 		slave->cleanup         = sunxi_spi_cleanup;
@@ -1745,7 +1765,7 @@ static int __init sunxi_spi_probe(struct platform_device *pdev)
 	}
 
 #ifdef	CONFIG_SPI_SLAVE
-	if(pdev->id!=SLAVE_BUS) {
+	if(!board->is_slave) {
 #endif
 		aw_spi->workqueue = create_singlethread_workqueue(dev_name(master->dev.parent));
 #ifdef	CONFIG_SPI_SLAVE
@@ -1776,7 +1796,7 @@ static int __init sunxi_spi_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&aw_spi->queue);
 
 #ifdef	CONFIG_SPI_SLAVE
-	if(pdev->id!=SLAVE_BUS) {
+	if(!board->is_slave) {
 #endif
 		if (spi_register_master(master)) {
 			spi_err("%s: Cannot register SPI master\n", __func__);
@@ -1791,13 +1811,12 @@ static int __init sunxi_spi_probe(struct platform_device *pdev)
 				aw_spi->dma_id_rx, aw_spi->dma_id_tx);
 #ifdef	CONFIG_SPI_SLAVE
 	}else{
-		printk("%s: spi slave mode! spi_register_slave(slave)\n",__func__);
 		if (spi_register_slave(slave)) {
 			spi_err("cannot register SPI Slave\n");
 			ret = -EBUSY;
 			goto err6;
 		}
-		spi_inf("allwinners SoC SPI Driver loaded for Bus SPI-%d as slave\n", pdev->id);
+		spi_inf("allwinners SoC SPI Driver loaded for Bus SPI-%d as slave device\n", pdev->id);
 	}
 #endif
 	return 0;
@@ -1895,8 +1914,10 @@ static int sunxi_spi_suspend(struct platform_device *pdev, pm_message_t state)
 #ifdef	CONFIG_SPI_SLAVE
 	else if(slave)
 		aw_spi = spi_slave_get_devdata(slave);
-	else
-		printk("%s: SPI Error: could not determine master/slave.\n",__func__);
+	else{
+		spi_err("%s: SPI Error: could not determine master/slave.\n",__func__);
+		return -EINVAL;
+	}
 #endif
 
 	spin_lock_irqsave(&aw_spi->lock, flags);
@@ -1936,8 +1957,10 @@ static int sunxi_spi_resume(struct platform_device *pdev)
 	}else if(slave){
 		aw_spi = spi_slave_get_devdata(slave);
 		bus_num = slave->bus_num;
-	}else
-		printk("%s: SPI Error: could not determine master/slave.\n",__func__);
+	}else{
+		spi_err("%s: SPI Error: could not determine master/slave.\n",__func__);
+		return -EINVAL;
+	}
 #endif
 
 	/* Enable the clock */
@@ -2176,7 +2199,6 @@ static struct platform_device sunxi_spi3_device = {
 	},
 };
 
-static struct spi_board_info *spi_boards = NULL;
 static int sunxi_spi_register_spidev(void)
 {
 	int spi_dev_num = 0;
@@ -2201,7 +2223,7 @@ static int sunxi_spi_register_spidev(void)
 		return -1;
 	}
 
-	spi_inf("%-10s %-16s %-16s %-8s %-4s %-4s\n", "boards num", "modalias", "max_spd_hz", "bus_num", "cs", "mode");
+	spi_inf("%-10s %-16s %-16s %-8s %-4s %-4s %-4s\n", "boards num", "modalias", "max_spd_hz", "bus_num", "cs", "mode","slave");
 	for (i=0; i<spi_dev_num; i++)
 	{
 		board = &spi_boards[i];
@@ -2237,6 +2259,10 @@ static int sunxi_spi_register_spidev(void)
 			board->irq = -1;
 		} else if(gpio_request(irq_gpio, spi_board_name) == 0)
 			board->irq = gpio_to_irq(irq_gpio);
+		ret = script_parser_fetch(spi_board_name, "is_slave", (void*)&board->is_slave, sizeof(unsigned int));
+		if (ret != SCRIPT_PARSER_OK) {
+			board->is_slave = 0;
+		}
 		/*
 		   ret = script_parser_fetch(spi_board_name, "full_duplex", &board->full_duplex, sizeof(int));
 		   if(ret != SCRIPT_PARSER_OK) {
@@ -2249,7 +2275,8 @@ static int sunxi_spi_register_spidev(void)
 		   goto fail;
 		   }
 		 */
-		spi_inf("%-10d %-16s %-16d %-8d %-4d 0x%-4d\n", i, board->modalias, board->max_speed_hz, board->bus_num, board->chip_select, board->mode);
+		spi_inf("%-10d %-16s %-16d %-8d %-4d 0x%-4d %s\n", i, board->modalias, board->max_speed_hz, 
+				board->bus_num, board->chip_select, board->mode, board->is_slave?"Y":"N");
 	}
 
 	/* register boards */

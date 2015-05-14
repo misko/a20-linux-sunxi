@@ -218,6 +218,7 @@ struct sunxi_spi_platform_data {
     int cs_bitmap;          // cs0-0x1,cs1-0x2,cs0&cs1-0x3
     int num_cs;             // number of cs
     const char *clk_name;   // ahb clk name
+    int is_slave;
 };
 
 /* spi device controller state, alloc */
