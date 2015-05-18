@@ -25,6 +25,16 @@ adis16240-y             := adis16240_core.o
 adis16240-$(CONFIG_IIO_BUFFER) += adis16240_ring.o adis16240_trigger.o
 obj-$(CONFIG_ADIS16240) += adis16240.o
 
+obj-$(CONFIG_SENSORS_BMA2X2)	+= bma2x2.o
+
+ifeq ($(CONFIG_SENSORS_BMA2X2_ENABLE_INT1),y)
+	EXTRA_CFLAGS += -DBMA2X2_ENABLE_INT1
+endif
+
+ifeq ($(CONFIG_BOSCH_BMA2X2_ENABLE_INT2),y)
+	EXTRA_CFLAGS += -DBMA2X2_ENABLE_INT2
+endif
+
 obj-$(CONFIG_KXSD9)	+= kxsd9.o
 
 lis3l02dq-y		:= lis3l02dq_core.o
