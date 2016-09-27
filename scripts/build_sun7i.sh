@@ -11,7 +11,6 @@ set -e
 #Setup common variables
 export ARCH=arm
 export CROSS_COMPILE=arm-linux-gnueabihf-
-#export CROSS_COMPILE=arm-linux-gnueabi-
 export AS=${CROSS_COMPILE}as
 export LD=${CROSS_COMPILE}ld
 export CC=${CROSS_COMPILE}gcc
@@ -21,15 +20,6 @@ export STRIP=${CROSS_COMPILE}strip
 export OBJCOPY=${CROSS_COMPILE}objcopy
 export OBJDUMP=${CROSS_COMPILE}objdump
 
-
-echo `which $CC`
-echo `which $CC`
-echo `which $CC`
-echo `which $CC`
-echo `which $CC`
-echo `which $CC`
-echo `which $CC`
-echo `which $CC`
 PLATFORM=$1
 MODULE_OUT="output/${PLATFORM}"
 USE_DEFCONF=false
@@ -68,31 +58,23 @@ build_kernel()
 		echo -e "\n\t\tUsing previous ${PLATFROM} config file .config.${PLATFORM}"
 		ln -s .config.${PLATFORM} .config
         fi
-	make -j4 ARCH=${ARCH} INSTALL_MOD_PATH=${MODULE_OUT} CROSS_COMPILE=${CROSS_COMPILE} -j8 uImage modules
-	make -j4 ARCH=${ARCH} INSTALL_MOD_PATH=${MODULE_OUT} CROSS_COMPILE=${CROSS_COMPILE} -j8 zImage
-	#echo make -j4 ARCH=${ARCH} INSTALL_MOD_PATH=${MODULE_OUT} CROSS_COMPILE=${CROSS_COMPILE} -j8 dtbs
-	#exit
-	make -j4 ARCH=${ARCH} INSTALL_MOD_PATH=${MODULE_OUT} CROSS_COMPILE=${CROSS_COMPILE} -j8 modules_install
+	make ARCH=${ARCH} INSTALL_MOD_PATH=${MODULE_OUT} CROSS_COMPILE=${CROSS_COMPILE} -j8 uImage modules
+	make ARCH=${ARCH} INSTALL_MOD_PATH=${MODULE_OUT} CROSS_COMPILE=${CROSS_COMPILE} -j8 modules_install
 	cp arch/arm/boot/uImage ${MODULE_OUT}
-	${OBJCOPY} -R .note.gnu.build-id -S -O binary vmlinux output/bImage
-	cp -vf arch/arm/boot/[zu]Image output/
-	cp .config output/
-	cp rootfs.cpio.gz output/
+	#${OBJCOPY} -R .note.gnu.build-id -S -O binary vmlinux output/bImage
+	#cp -vf arch/arm/boot/[zu]Image output/
+	#cp .config output/
+	#cp rootfs/sun4i_rootfs.cpio.gz output/
 
-	~/baidu/a20/lichee/tools/pack/pctools/linux/android/mkbootimg --kernel output/bImage \
-			--ramdisk output/rootfs.cpio.gz \
-			--board 'sun7i' \
-			--base 0x40000000 \
-			-o output/boot.img
+	#mkbootimg --kernel output/bImage \
+	#		--ramdisk output/sun4i_rootfs.cpio.gz \
+	#		--board 'sun4i' \
+	#		--base 0x40000000 \
+	#		-o output/boot.img
 }
 
 build_modules()
 {
-	    mkdir -p ./skel/lib/modules/${KERNEL_VERSION}
-    #cp ${LICHEE_MOD_DIR}/nand.ko ./skel/lib/modules/${KERNEL_VERSION}
-    #cp ${LICHEE_MOD_DIR}/hdmi.ko ./skel/lib/modules/${KERNEL_VERSION}
-	echo "WTF"
- 	./scripts/build_rootfs.sh c rootfs.cpio.gz > /dev/null
 
         return;
 	echo "Building modules"
@@ -102,16 +84,15 @@ build_modules()
 		exit 1
 	fi
 
-	make -j4 -C modules/example LICHEE_MOD_DIR=${MODULE_OUT} LICHEE_KDIR=${KDIR} \
+	make -C modules/example LICHEE_MOD_DIR=${MODULE_OUT} LICHEE_KDIR=${KDIR} \
 		install
 
 	(
 	export LANG=en_US.UTF-8
 	unset LANGUAGE
-	make -j4 -C modules/mali LICHEE_MOD_DIR=${MODULE_OUT} LICHEE_KDIR=${LICHEE_KDIR} \
+	make -C modules/mali LICHEE_MOD_DIR=${MODULE_OUT} LICHEE_KDIR=${LICHEE_KDIR} \
 		install
 	)
-
 }
 
 clean_kernel()

@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-PLATFORM=""
+export PATH=~/baidu/a20/lichee/out/linux/common/buildroot/external-toolchain/bin:$PATH
+
+PLATFORM="sun7i"
 MODULE=""
 
 show_help()
