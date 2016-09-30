@@ -462,9 +462,9 @@ static struct csi_fmt *get_format(struct csi_dev *dev, struct v4l2_format *f)
 	for (k = 0; k < ARRAY_SIZE(formats); k++) {
 		fmt = &formats[k];
 		if (fmt->csi_if == dev->interface) {
-			csi_dbg(0,"interface ok dev->interface = %d!\n",dev->interface);
+			//csi_dbg(0,"interface ok dev->interface = %d!\n",dev->interface);
 			if (fmt->fourcc == f->fmt.pix.pixelformat) {
-				csi_dbg(0,"fourcc fmt ok!\n");
+				//csi_dbg(0,"fourcc fmt ok!\n");
 				ccm_fmt.code = fmt->ccm_fmt;//linux-3.0
 				ccm_fmt.field = f->fmt.pix.field;
 				ccm_fmt.width = f->fmt.pix.width;//linux-3.0
@@ -478,14 +478,16 @@ static struct csi_fmt *get_format(struct csi_dev *dev, struct v4l2_format *f)
 				f->fmt.pix.field = ccm_fmt.field;//linux-3.0
 				f->fmt.pix.width = ccm_fmt.width;//linux-3.0
 				f->fmt.pix.height = ccm_fmt.height;//linux-3.0
-//				f->fmt.pix.bytesperline = ccm_fmt.fmt.pix.bytesperline;//linux-3.0
-//				f->fmt.pix.sizeimage = ccm_fmt.fmt.pix.sizeimage;//linux-3.0
-				
+				//f->fmt.pix.bytesperline = ccm_fmt.fmt.pix.bytesperline;//linux-3.0
+				//f->fmt.pix.sizeimage = ccm_fmt.fmt.pix.sizeimage;//linux-3.0
+				//f->fmt.pix.bytesperline = (fmt->depth*ccm_fmt.width)/8;
+				//f->fmt.pix.sizeimage = f->fmt.pix.bytesperline * ccm_fmt.height;
+				//csi_print("size of image %u", f->fmt.pix.sizeimage);	
 				if(ccm_fmt.field == fmt->field) {
 					break;
-				}
-				else
+				} else {
 					continue;
+				}
 			}
 		}
 	}
@@ -587,8 +589,7 @@ static inline void csi_set_addr(struct csi_dev *dev,struct csi_buffer *buffer)
 		}
 	}else if(dev->fmt->input_fmt==CSI_YUV422_16){
 		//TODO
-	}
-	else {
+	} else {
 		dev->csi_buf_addr.y  = addr_org;
 		dev->csi_buf_addr.cb = addr_org;
 		dev->csi_buf_addr.cr = addr_org;
@@ -788,7 +789,12 @@ static irqreturn_t csi_isr(int irq, void *priv)
 
 	if (first_flag == 0) {
 		first_flag=1;
-		goto set_next_addr;
+		goto set_next_addr; 
+	}
+
+	first_flag++;
+	if (first_flag%3==0) {
+		//goto set_next_addr; 
 	}
 
 	if (list_empty(&dma_q->active)) {
@@ -825,17 +831,20 @@ static irqreturn_t csi_isr(int irq, void *priv)
 	//judge if the frame queue has been written to the last
 	if (list_empty(&dma_q->active)) {
 		csi_dbg(1,"No more free frame\n");
-		goto unlock;
+		spin_unlock(&dev->slock); //MISKO
+		return IRQ_HANDLED; //MISKO
+		//goto unlock_without_clear;
 	}
 
 	if ((&dma_q->active) == dma_q->active.next->next) {
 		csi_dbg(1,"No more free frame on next time\n");
-		goto unlock;
+		//goto unlock;
 	}
 
 
 set_next_addr:
-	buf = list_entry(dma_q->active.next->next,struct csi_buffer, vb.queue);
+	//buf = list_entry(dma_q->active.next->next,struct csi_buffer, vb.queue);
+	buf = list_entry(dma_q->active.next,struct csi_buffer, vb.queue); // MISKO
 	csi_set_addr(dev,buf);
 
 unlock:
@@ -853,6 +862,8 @@ unlock:
 static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned int *size)
 {
 	struct csi_dev *dev = vq->priv_data;
+	csi_print("buffer_setup\n");
+	csi_dbg(0,"buffer_setup\n");
 
 	csi_dbg(1,"buffer_setup\n");
 
@@ -923,12 +934,13 @@ static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned
 	dev->frame_size = *size;
 
 	if (*count < 3) {
-		*count = 3;
-		csi_err("buffer count is invalid, set to 3\n");
+		*count = 5;
+		csi_err("buffer count is invalid, set to 5\n");
 	} else if(*count > 5) {
 		*count = 5;
 		csi_err("buffer count is invalid, set to 5\n");
 	}
+	
 
 	while (*size * *count > CSI_MAX_FRAME_MEM) {
 		csi_err("buffer count is greater than CSI_MAX_FRAME_MEM\n");
@@ -959,7 +971,7 @@ static int buffer_prepare(struct videobuf_queue *vq, struct videobuf_buffer *vb,
 	struct csi_buffer *buf = container_of(vb, struct csi_buffer, vb);
 	int rc;
 
-	csi_dbg(1,"buffer_prepare\n");
+	//csi_dbg(0,"buffer_prepare\n");
 
 	BUG_ON(NULL == dev->fmt);
 
@@ -1003,9 +1015,18 @@ static void buffer_queue(struct videobuf_queue *vq, struct videobuf_buffer *vb)
 	struct csi_buffer *buf = container_of(vb, struct csi_buffer, vb);
 	struct csi_dmaqueue *vidq = &dev->vidq;
 
-	csi_dbg(1,"buffer_queue\n");
+	//csi_dbg(0,"buffer_queue\n");
 	buf->vb.state = VIDEOBUF_QUEUED;
+	//judge if the frame queue has been written to the last
+	if (list_empty(&vidq->active)) {
+		csi_dbg(3,"LIST EMPTY ADDING\n");
+		csi_set_addr(dev,buf);
+		bsp_csi_int_clear_status(dev,CSI_INT_FRAME_DONE);
+		bsp_csi_int_enable(dev,CSI_INT_FRAME_DONE);
+	}
+	//spin_lock(&dev->slock); //MISKO ? // locks up system, caller has spin lock?
 	list_add_tail(&buf->vb.queue, &vidq->active);
+	//spin_unlock(&dev->slock); //MISKO ? // locks up system, caller has spin lock?
 }
 
 static void buffer_release(struct videobuf_queue *vq,
@@ -1013,7 +1034,7 @@ static void buffer_release(struct videobuf_queue *vq,
 {
 	struct csi_buffer *buf  = container_of(vb, struct csi_buffer, vb);
 
-	csi_dbg(1,"buffer_release\n");
+	//csi_dbg(0,"buffer_release\n");
 
 	free_buffer(vq, buf);
 }
@@ -1048,7 +1069,7 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 {
 	struct csi_fmt *fmt;
 
-	csi_dbg(0,"vidioc_enum_fmt_vid_cap\n");
+	csi_dbg(0,"vidioc_enum_fmt_vid_cap %d > %d\n", f->index, ARRAY_SIZE(formats)-1);
 
 	if (f->index > ARRAY_SIZE(formats)-1) {
 		return -EINVAL;
@@ -1064,10 +1085,10 @@ static int vidioc_enum_framesizes_cap(struct file *file, void *fh,
 {
 	struct csi_dev *dev = video_drvdata(file);
   
-	csi_dbg(0, "vidioc_enum_framesizes\n");
+	//csi_dbg(0, "vidioc_enum_framesizes\n");
 
 	if (dev == NULL || dev->sd->ops->video->enum_framesizes==NULL) {
-		printk("v4l2 device does not support enum_framesizes\n");
+		printk("v4l2 device does not support enum_framesizes WTF |%p|\n",dev);
 		return -EINVAL;
 	} 
   
@@ -1078,7 +1099,7 @@ static int vidioc_enum_frameintervals_cap(struct file *file, void *fh,
 {
 	struct csi_dev *dev = video_drvdata(file);
   
-	csi_dbg(0, "vidioc_enum_frameintervals\n");
+	//csi_dbg(0, "vidioc_enum_frameintervals\n");
 
 	if (dev == NULL || dev->sd->ops->video->enum_frameintervals==NULL) {
 		printk("v4l2 device does not support enum_frameintervals\n");
@@ -1091,7 +1112,7 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 					struct v4l2_format *f)
 {
 	struct csi_dev *dev = video_drvdata(file);
-
+	csi_print("g_fmp_vid_cap\n");
 	f->fmt.pix.width        = dev->width;
 	f->fmt.pix.height       = dev->height;
 	f->fmt.pix.field        = dev->vb_vidq.field;
@@ -1110,7 +1131,7 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 	struct v4l2_mbus_framefmt ccm_fmt;//linux-3.0
 	int ret = 0;
 
-	csi_dbg(0,"vidioc_try_fmt_vid_cap\n");
+	//csi_print("vidioc_try_fmt_vid_cap\n");
 
 	/*judge the resolution*/
 	if(f->fmt.pix.width > MAX_WIDTH || f->fmt.pix.height > MAX_HEIGHT) {
@@ -1125,9 +1146,10 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 		return -EINVAL;
 	}
 
-	csi_dbg(0,"pix->width=%d\n",f->fmt.pix.width);
-	csi_dbg(0,"pix->height=%d\n",f->fmt.pix.height);
+	//csi_dbg(0,"pix->width=%d\n",f->fmt.pix.width);
+	//csi_dbg(0,"pix->height=%d\n",f->fmt.pix.height);
 
+	/*
 	//save current format info
 	dev->fmt = csi_fmt;
 	dev->vb_vidq.field = f->fmt.pix.field;
@@ -1138,6 +1160,7 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 	dev->csi_mode.output_fmt = dev->fmt->output_fmt;
 	dev->csi_mode.input_fmt = dev->fmt->input_fmt;
 	dev->csi_mode.field_sel = dev->fmt->csi_field;
+	*/ //ONLY TRY THE FORMAT ? MISKO
 
 	return 0;
 }
@@ -1151,7 +1174,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	struct v4l2_mbus_framefmt ccm_fmt;//linux-3.0
 	struct csi_fmt *csi_fmt;
 
-	csi_dbg(0,"vidioc_s_fmt_vid_cap\n");
+	csi_print("vidioc_s_fmt_vid_cap\n");
 
 	if (csi_is_generating(dev)) {
 		csi_err("%s device busy\n", __func__);
@@ -1198,21 +1221,28 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 
 	switch(dev->fmt->ccm_fmt) {
 	case V4L2_MBUS_FMT_YUYV8_2X8://linux-3.0
-		if ((dev->fmt->fourcc == V4L2_PIX_FMT_NV61) || (dev->fmt->fourcc == V4L2_PIX_FMT_NV21))
+		if ((dev->fmt->fourcc == V4L2_PIX_FMT_NV61) || (dev->fmt->fourcc == V4L2_PIX_FMT_NV21)) {
+			csi_print("vidioc_s_fmt_vid_cap mode YVYU\n");
 			dev->csi_mode.seq = CSI_YVYU;
-		else
+		} else {
+			csi_print("vidioc_s_fmt_vid_cap mode YUYV\n");
 			dev->csi_mode.seq = CSI_YUYV;
+		}
 		break;
 	case V4L2_MBUS_FMT_YVYU8_2X8://linux-3.0
+		csi_print("vidioc_s_fmt_vid_cap mode YVYU\n");
 		dev->csi_mode.seq = CSI_YVYU;
 		break;
 	case V4L2_MBUS_FMT_UYVY8_2X8://linux-3.0
+		csi_print("vidioc_s_fmt_vid_cap mode UYVY\n");
 		dev->csi_mode.seq = CSI_UYVY;
 		break;
 	case V4L2_MBUS_FMT_VYUY8_2X8://linux-3.0
+		csi_print("vidioc_s_fmt_vid_cap mode VYUY\n");
 		dev->csi_mode.seq = CSI_VYUY;
 		break;
 	default:
+		csi_print("vidioc_s_fmt_vid_cap mode defaul YUYV\n");
 		dev->csi_mode.seq = CSI_YUYV;
 		break;
 	}
@@ -1264,25 +1294,33 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	bsp_csi_set_offset(dev,dev->hstart,dev->vstart);
 	bsp_csi_set_size(dev,width_buf,height_buf,width_len);
 
+	
+	csi_print("vidioc_s_fmt_vid_cap done S_FMT\n");
 	ret = 0;
 out:
 	mutex_unlock(&q->vb_lock);
 	return ret;
 }
 
+
 static int vidioc_reqbufs(struct file *file, void *priv,
 			  struct v4l2_requestbuffers *p)
 {
 	struct csi_dev *dev = video_drvdata(file);
 
-	csi_dbg(0,"vidioc_reqbufs\n");
-
-	return videobuf_reqbufs(&dev->vb_vidq, p);
+	//csi_print("vidioc_reqbufs\n");
+	int ret = videobuf_reqbufs(&dev->vb_vidq, p);
+	//csi_print("vidioc_reqbufs %d\n",ret);
+	csi_print("count %u, type %u, mem %u\n",p->count, p->type, p->memory);
+	
+	return ret ; //videobuf_reqbufs(&dev->vb_vidq, p);
 }
 
 static int vidioc_querybuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
 	struct csi_dev *dev = video_drvdata(file);
+
+	//csi_dbg(0,"vidioc_querybufs\n");
 
 	return videobuf_querybuf(&dev->vb_vidq, p);
 }
@@ -1290,15 +1328,20 @@ static int vidioc_querybuf(struct file *file, void *priv, struct v4l2_buffer *p)
 static int vidioc_qbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
 	struct csi_dev *dev = video_drvdata(file);
-
-	return videobuf_qbuf(&dev->vb_vidq, p);
+	//csi_dbg(0,"vidioc_qbuf\n");
+	int ret =  videobuf_qbuf(&dev->vb_vidq, p);
+	//csi_dbg(0,"vidioc_qbuf %d\n",ret);
+	return ret;
 }
 
 static int vidioc_dqbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
 	struct csi_dev *dev = video_drvdata(file);
+	//csi_dbg(0,"vidioc_dqbuf\n");
 
-	return videobuf_dqbuf(&dev->vb_vidq, p, file->f_flags & O_NONBLOCK);
+	int ret =  videobuf_dqbuf(&dev->vb_vidq, p, file->f_flags & O_NONBLOCK);
+	//csi_dbg(0,"vidioc_dqbuf - done %d\n",ret);
+	return ret;
 }
 
 #ifdef CONFIG_VIDEO_V4L1_COMPAT
@@ -1403,6 +1446,7 @@ static int vidioc_enum_input(struct file *file, void *priv,
 				struct v4l2_input *inp)
 {
 	struct csi_dev *dev = video_drvdata(file);
+	csi_dbg(0,"vidioc_enum_imput %d %d\n",inp->index,dev->dev_qty);
 
 	if (inp->index > dev->dev_qty-1) {
 		csi_err("input index invalid!\n");
@@ -1417,6 +1461,7 @@ static int vidioc_enum_input(struct file *file, void *priv,
 static int vidioc_g_input(struct file *file, void *priv, unsigned int *i)
 {
 	struct csi_dev *dev = video_drvdata(file);
+	csi_dbg(0,"vidioc_g_input\n");
 
 	*i = dev->input;
 	return 0;
@@ -1426,6 +1471,7 @@ static int internal_s_input(struct csi_dev *dev, unsigned int i)
 {
 	struct v4l2_control ctrl;
 	int ret;
+	csi_dbg(0,"internal_s_input\n");
 
 	if (i > dev->dev_qty-1) {
 		csi_err("set input error!\n");
@@ -1533,6 +1579,7 @@ recover:
 static int vidioc_s_input(struct file *file, void *priv, unsigned int i)
 {
 	struct csi_dev *dev = video_drvdata(file);
+	csi_dbg(0,"vidioc_s_input\n");
 
 	return internal_s_input(dev , i);
 }
@@ -1543,6 +1590,7 @@ static int vidioc_queryctrl(struct file *file, void *priv,
 {
 	struct csi_dev *dev = video_drvdata(file);
 	int ret;
+	csi_dbg(0,"vidioc_queryctrl\n");
 
 	ret = v4l2_subdev_call(dev->sd,core,queryctrl,qc);
 	if (ret != -EINVAL && ret < 0)
@@ -1556,6 +1604,7 @@ static int vidioc_g_ctrl(struct file *file, void *priv,
 {
 	struct csi_dev *dev = video_drvdata(file);
 	int ret;
+	csi_dbg(0,"vidioc_g_ctrl\n");
 
 	ret = v4l2_subdev_call(dev->sd,core,g_ctrl,ctrl);
 	if (ret < 0)
@@ -1571,6 +1620,7 @@ static int vidioc_s_ctrl(struct file *file, void *priv,
 	struct csi_dev *dev = video_drvdata(file);
 	struct v4l2_queryctrl qc;
 	int ret;
+	csi_dbg(0,"vidioc_s_ctrl\n");
 
 	qc.id = ctrl->id;
 	ret = vidioc_queryctrl(file, priv, &qc);
@@ -1609,6 +1659,7 @@ static int vidioc_s_ext_ctrls(struct file *file, void *priv,
 	struct csi_dev *dev = video_drvdata(file);
 	//struct v4l2_query_ext_ctrl qc;
 	int ret;
+	csi_dbg(0,"vidioc_s_ext_ctrls\n");
 
 	/*qc.id = ctrl->id;
 	ret = vidioc_query_ext_ctrl(file, priv, &qc);
@@ -1633,6 +1684,7 @@ static int vidioc_g_parm(struct file *file, void *priv,
 {
 	struct csi_dev *dev = video_drvdata(file);
 	int ret;
+	csi_dbg(0,"vidioc_g_param\n");
 
 	ret = v4l2_subdev_call(dev->sd,video,g_parm,parms);
 	if (ret < 0)
@@ -1646,6 +1698,7 @@ static int vidioc_s_parm(struct file *file, void *priv,
 {
 	struct csi_dev *dev = video_drvdata(file);
 	int ret;
+	csi_dbg(0,"vidioc_s_param 1\n");
 
 	ret = v4l2_subdev_call(dev->sd,video,s_parm,parms);
 	if (ret < 0)
@@ -1658,6 +1711,7 @@ static int vidioc_g_crop(struct file *file, void *priv,
 {
 	struct csi_dev *dev = video_drvdata(file);
 	int ret;
+	csi_dbg(0,"vidioc_g_crop\n");
 	ret = v4l2_subdev_call(dev->sd, video, g_crop, crop);
 	if (ret < 0)
 		csi_err("v4l2 sub device g_crop error!\n");
@@ -1668,6 +1722,7 @@ static int vidioc_s_crop(struct file *file, void *priv, struct v4l2_crop *crop)
 {
 	struct csi_dev *dev = video_drvdata(file);
 	int ret;
+	csi_dbg(0,"vidioc_s_crop\n");
 
 	ret = v4l2_subdev_call(dev->sd, video, s_crop, crop);
 	if (ret < 0)
@@ -1710,7 +1765,7 @@ static int csi_open(struct file *file)
 	int ret,input_num;
 	struct v4l2_control ctrl;
 
-	csi_dbg(0,"csi_open\n");
+	csi_dbg(0,"csi_open x\n");
 
 	if (dev->opened == 1) {
 		csi_err("device open busy\n");
@@ -1874,6 +1929,7 @@ static const struct v4l2_ioctl_ops csi_ioctl_ops = {
 	.vidioc_enum_input        = vidioc_enum_input,
 	.vidioc_g_input           = vidioc_g_input,
 	.vidioc_s_input           = vidioc_s_input,
+	//.vidioc_create_bufs           = vidioc_create_bufs,
 	.vidioc_streamon          = vidioc_streamon,
 	.vidioc_streamoff         = vidioc_streamoff,
 	.vidioc_queryctrl         = vidioc_queryctrl,
