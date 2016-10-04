@@ -1088,7 +1088,7 @@ static int vidioc_enum_framesizes_cap(struct file *file, void *fh,
 	//csi_dbg(0, "vidioc_enum_framesizes\n");
 
 	if (dev == NULL || dev->sd->ops->video->enum_framesizes==NULL) {
-		printk("v4l2 device does not support enum_framesizes WTF |%p|\n",dev);
+		//printk("v4l2 device does not support enum_framesizes WTF |%p|\n",dev);
 		return -EINVAL;
 	} 
   
@@ -1135,7 +1135,7 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 
 	/*judge the resolution*/
 	if(f->fmt.pix.width > MAX_WIDTH || f->fmt.pix.height > MAX_HEIGHT) {
-		csi_err("size is too large, automatically set to maximum!\n");
+		//csi_err("size is too large, automatically set to maximum!\n");
 		f->fmt.pix.width = MAX_WIDTH;
 		f->fmt.pix.height = MAX_HEIGHT;
 	}

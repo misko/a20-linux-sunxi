@@ -46,7 +46,7 @@ MODULE_DESCRIPTION("A low-level driver for OV ov5640 sensors");
 MODULE_LICENSE("GPL");
 
 //for internel driver debug
-#define DEV_DBG_EN   		1
+#define DEV_DBG_EN   		0
 #if(DEV_DBG_EN == 1)
 #define csi_dev_dbg(x,arg...) printk(KERN_INFO"[CSI_DEBUG][OV5640]"x,##arg)
 #else
