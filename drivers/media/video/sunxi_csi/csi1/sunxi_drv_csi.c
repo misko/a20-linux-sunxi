@@ -748,7 +748,7 @@ static irqreturn_t csi_isr(int irq, void *priv)
 	}
 
 	if (list_empty(&dma_q->active)) {
-		csi_err("No active queue to serve\n");
+		//csi_err("No active queue to serve\n");
 		goto unlock;
 	}
 

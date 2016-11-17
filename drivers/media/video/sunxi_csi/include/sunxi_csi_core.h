@@ -37,7 +37,7 @@
 //for internel driver debug
 #define DBG_EN   		0
 //debug level 0~3
-#define DBG_LEVEL 	3
+#define DBG_LEVEL 	1
 
 //for internel driver debug
 #if(DBG_EN==1)

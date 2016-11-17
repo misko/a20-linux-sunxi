@@ -443,11 +443,6 @@ int videobuf_reqbufs(struct videobuf_queue *q,
 	unsigned int size, count;
 	int retval;
 
-	if (req->count < 1) {
-		dprintk(1, "reqbufs: count invalid (%d)\n", req->count);
-		return -EINVAL;
-	}
-
 	if (req->memory != V4L2_MEMORY_MMAP     &&
 	    req->memory != V4L2_MEMORY_USERPTR  &&
 	    req->memory != V4L2_MEMORY_OVERLAY) {
@@ -471,6 +466,13 @@ int videobuf_reqbufs(struct videobuf_queue *q,
 		dprintk(1, "reqbufs: stream running\n");
 		retval = -EBUSY;
 		goto done;
+	}
+
+	if (req->count < 1) {
+		dprintk(1, "reqbufs: count invalid (%d)\n", req->count);
+		retval = __videobuf_free(q);
+		goto done;
+		//return -EINVAL;
 	}
 
 	count = req->count;

@@ -482,7 +482,7 @@ static struct csi_fmt *get_format(struct csi_dev *dev, struct v4l2_format *f)
 				//f->fmt.pix.sizeimage = ccm_fmt.fmt.pix.sizeimage;//linux-3.0
 				//f->fmt.pix.bytesperline = (fmt->depth*ccm_fmt.width)/8;
 				//f->fmt.pix.sizeimage = f->fmt.pix.bytesperline * ccm_fmt.height;
-				//csi_print("size of image %u", f->fmt.pix.sizeimage);	
+				//csi_print("size of image %u / %u", ccm_fmt.height*(fmt->depth*ccm_fmt.width)/8,(fmt->depth*ccm_fmt.width)/8);	
 				if(ccm_fmt.field == fmt->field) {
 					break;
 				} else {
@@ -798,7 +798,7 @@ static irqreturn_t csi_isr(int irq, void *priv)
 	}
 
 	if (list_empty(&dma_q->active)) {
-		csi_err("No active queue to serve\n");
+		//csi_err("No active queue to serve\n");
 		goto unlock;
 	}
 
@@ -831,14 +831,15 @@ static irqreturn_t csi_isr(int irq, void *priv)
 	//judge if the frame queue has been written to the last
 	if (list_empty(&dma_q->active)) {
 		csi_dbg(1,"No more free frame\n");
-		spin_unlock(&dev->slock); //MISKO
-		return IRQ_HANDLED; //MISKO
+		//spin_unlock(&dev->slock); //MISKO
+		//return IRQ_HANDLED; //MISKO
 		//goto unlock_without_clear;
+		goto unlock;
 	}
 
 	if ((&dma_q->active) == dma_q->active.next->next) {
 		csi_dbg(1,"No more free frame on next time\n");
-		//goto unlock;
+		goto unlock;
 	}
 
 
@@ -900,6 +901,7 @@ static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned
 				break;
 				break;
 			default:
+				csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_CCIR656\n");
 				break;
 		}
 	}
@@ -925,6 +927,16 @@ static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned
 	}
 	else if(dev->fmt->input_fmt==CSI_YUV422_16){
 		//TODO
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
+		csi_err("SHOULDNT HAPPEN, in THE DRIVER CSI_YUV422_16\n");
 	}
 	else
 	{
@@ -940,6 +952,7 @@ static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned
 		*count = 5;
 		csi_err("buffer count is invalid, set to 5\n");
 	}
+	*count = 5;
 	
 
 	while (*size * *count > CSI_MAX_FRAME_MEM) {
@@ -995,6 +1008,7 @@ static int buffer_prepare(struct videobuf_queue *vq, struct videobuf_buffer *vb,
 	if (VIDEOBUF_NEEDS_INIT == buf->vb.state) {
 		rc = videobuf_iolock(vq, &buf->vb, NULL);
 		if (rc < 0) {
+			csi_dbg(0,"FAIL NEEDS INIT???\n");
 			goto fail;
 		}
 	}
@@ -1015,15 +1029,15 @@ static void buffer_queue(struct videobuf_queue *vq, struct videobuf_buffer *vb)
 	struct csi_buffer *buf = container_of(vb, struct csi_buffer, vb);
 	struct csi_dmaqueue *vidq = &dev->vidq;
 
-	//csi_dbg(0,"buffer_queue\n");
+	csi_dbg(0,"buffer_queue\n");
 	buf->vb.state = VIDEOBUF_QUEUED;
 	//judge if the frame queue has been written to the last
-	if (list_empty(&vidq->active)) {
-		csi_dbg(3,"LIST EMPTY ADDING\n");
-		csi_set_addr(dev,buf);
-		bsp_csi_int_clear_status(dev,CSI_INT_FRAME_DONE);
-		bsp_csi_int_enable(dev,CSI_INT_FRAME_DONE);
-	}
+	//if (list_empty(&vidq->active)) {
+	//	csi_dbg(1,"LIST EMPTY ADDING\n");
+	//	csi_set_addr(dev,buf);
+	//	//bsp_csi_int_clear_status(dev,CSI_INT_FRAME_DONE);
+	//	//bsp_csi_int_enable(dev,CSI_INT_FRAME_DONE);
+	//}
 	//spin_lock(&dev->slock); //MISKO ? // locks up system, caller has spin lock?
 	list_add_tail(&buf->vb.queue, &vidq->active);
 	//spin_unlock(&dev->slock); //MISKO ? // locks up system, caller has spin lock?
@@ -1034,7 +1048,7 @@ static void buffer_release(struct videobuf_queue *vq,
 {
 	struct csi_buffer *buf  = container_of(vb, struct csi_buffer, vb);
 
-	//csi_dbg(0,"buffer_release\n");
+	csi_dbg(0,"buffer_release!!!\n");
 
 	free_buffer(vq, buf);
 }
@@ -1217,7 +1231,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	dev->csi_mode.output_fmt = dev->fmt->output_fmt;
 	dev->csi_mode.input_fmt = dev->fmt->input_fmt;
 	dev->csi_mode.field_sel = dev->fmt->csi_field;
-	//printk("output_fmt=%d input_fmt=%d %s\n",dev->fmt->output_fmt, dev->fmt->input_fmt, dev->fmt->name);
+	printk("output_fmt=%d input_fmt=%d %s\n",dev->fmt->output_fmt, dev->fmt->input_fmt, dev->fmt->name);
 
 	switch(dev->fmt->ccm_fmt) {
 	case V4L2_MBUS_FMT_YUYV8_2X8://linux-3.0
