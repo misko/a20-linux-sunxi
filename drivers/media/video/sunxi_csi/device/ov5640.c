@@ -559,10 +559,12 @@ static struct regval_list sensor_default_regs[] = {
 {{0x37,0x0c},{0x03}},//
 //A80 has the following here {0x3a00,0x78}, AEC CTRL00
 //{{0x3a,0x00},{0x78}}, // MISKO - ADDED LINE BASED ON A80
-//{{0x3a,0x00},{0x7C}}, // MISKO - ADDED LINE BASED ON A80
+//{{0x3a,0x00},{0x7C}}, // MISKO - ADDED LINE BASED ON A80 //NIGHT MODE?
 //{{0x3a,0x05},{0x70}}, // MISKO - ADDED LINE JUST out of no where, should insert frame in night mode - default value should be 0x30
-{{0x3a,0x02},{0x03}},//
-{{0x3a,0x03},{0xd8}},//
+{{0x3a,0x02},{0x03}},// original - misko
+//{{0x3a,0x02},{0x17}},// MISKO trying default
+{{0x3a,0x03},{0xd8}},// original -misko
+//{{0x3a,0x03},{0xb0}},// MISKO trying default
 {{0x3a,0x08},{0x01}},//
 {{0x3a,0x09},{0x27}},//
 {{0x3a,0x0a},{0x00}},//
@@ -3116,7 +3118,7 @@ static int sensor_s_fmt(struct v4l2_subdev *sd,
 			if(ret < 0) //MISKO
 				csi_dev_err("disalbe oe falied!\n"); //MISKO
 
-	msleep(600);
+	msleep(100);
 
 	return 0;
 }
