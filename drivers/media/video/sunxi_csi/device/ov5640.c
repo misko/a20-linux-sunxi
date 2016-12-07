@@ -167,6 +167,90 @@ static inline struct sensor_info *to_state(struct v4l2_subdev *sd)
 }
 
 
+//MISKO CONTROLS??
+//query fill - min, max , strp, def
+static const struct v4l2_queryctrl  ov5640_controls [] = {
+	{
+		.id			= V4L2_CID_VFLIP,
+		.type			= V4L2_CTRL_TYPE_INTEGER,
+		.name			= "Vertical flip",
+		.minimum		= 0,
+		.maximum		= 1,
+		.step			= 1,
+		.default_value	= 0,
+		.flags			= 0,
+	},	
+	{
+		.id			= V4L2_CID_HFLIP,
+		.type			= V4L2_CTRL_TYPE_INTEGER,
+		.name			= "Horizontal flip",
+		.minimum		= 0,
+		.maximum		= 1,
+		.step			= 1,
+		.default_value	= 0,
+		.flags			= 0,
+	},	
+	{
+		.id			= V4L2_CID_EXPOSURE,
+		.type			= V4L2_CTRL_TYPE_INTEGER,
+		.name			= "Exposure",
+		.minimum		= -4,
+		.maximum		= 4,
+		.step			= 1,
+		.default_value	= 0,
+		.flags			= 0,
+	},	
+	{
+		.id			= V4L2_CID_EXPOSURE_AUTO,
+		.type			= V4L2_CTRL_TYPE_INTEGER,
+		.name			= "Auto Exposure what",
+		.minimum		= 0,
+		.maximum		= 1,
+		.step			= 1,
+		.default_value	= 0,
+		.flags			= 0,
+	},	
+	{
+		.id			= V4L2_CID_DO_WHITE_BALANCE,
+		.type			= V4L2_CTRL_TYPE_INTEGER,
+		.name			= "Do white balance",
+		.minimum		= 0,
+		.maximum		= 5,
+		.step			= 1,
+		.default_value	= 0,
+		.flags			= 0,
+	},	
+	{
+		.id			= V4L2_CID_AUTO_WHITE_BALANCE,
+		.type			= V4L2_CTRL_TYPE_INTEGER,
+		.name			= "Auto White Balance",
+		.minimum		= 0,
+		.maximum		= 1,
+		.step			= 1,
+		.default_value	= 1,
+		.flags			= 0,
+	},	
+	{
+		.id			= V4L2_CID_COLORFX,
+		.type			= V4L2_CTRL_TYPE_INTEGER,
+		.name			= "Color FX",
+		.minimum		= 0,
+		.maximum		= 9,
+		.step			= 1,
+		.default_value	= 1,
+		.flags			= 0,
+	},	
+	{
+		.id			= V4L2_CID_CAMERA_FLASH_MODE,
+		.type			= V4L2_CTRL_TYPE_INTEGER,
+		.name			= "Camera flash mode",
+		.minimum		= 0,
+		.maximum		= 4,
+		.step			= 1,
+		.default_value	= 1,
+		.flags			= 0,
+	}
+};
 
 /*
  * The default register settings
@@ -513,7 +597,8 @@ static struct regval_list sensor_default_regs[] = {
 {{0x37,0x1b},{0x20}},//
 {{0x47,0x1c},{0x50}},//
 {{0x3a,0x13},{0x43}},//
-{{0x3a,0x18},{0x00}},//
+{{0x3a,0x18},{0x00}},// ORIRINGAL - MISKO // AGC GAIN CEIL?
+//{{0x3a,0x18},{0x03}},//
 {{0x3a,0x19},{0xf8}},//
 {{0x36,0x35},{0x13}},//
 {{0x36,0x36},{0x03}},//
@@ -558,20 +643,33 @@ static struct regval_list sensor_default_regs[] = {
 {{0x37,0x09},{0x52}},//
 {{0x37,0x0c},{0x03}},//
 //A80 has the following here {0x3a00,0x78}, AEC CTRL00
-//{{0x3a,0x00},{0x78}}, // MISKO - ADDED LINE BASED ON A80
+{{0x3a,0x00},{0x78}}, // MISKO - ADDED LINE BASED ON A80
 //{{0x3a,0x00},{0x7C}}, // MISKO - ADDED LINE BASED ON A80 //NIGHT MODE?
 //{{0x3a,0x05},{0x70}}, // MISKO - ADDED LINE JUST out of no where, should insert frame in night mode - default value should be 0x30
 {{0x3a,0x02},{0x03}},// original - misko
 //{{0x3a,0x02},{0x17}},// MISKO trying default
 {{0x3a,0x03},{0xd8}},// original -misko
 //{{0x3a,0x03},{0xb0}},// MISKO trying default
+
+//these are the auto banding step sizes 
+//50hz
+//{{0x3a,0x08},{0x01}},//
+//{{0x3a,0x09},{0x27}},//
 {{0x3a,0x08},{0x01}},//
 {{0x3a,0x09},{0x27}},//
+//60hz
 {{0x3a,0x0a},{0x00}},//
 {{0x3a,0x0b},{0xf6}},//
+
 {{0x3a,0x0e},{0x03}},//
 {{0x3a,0x0d},{0x04}},//
-{{0x3a,0x14},{0x03}},//
+{{0x3a,0x14},{0x03}},// original - misko
+//{{0x3a,0x14},{0x07}},// Misko 
+
+//MISKO MESSING
+//{{0x3a,0x1b},{0x38}},//
+//{{0x3a,0x1e},{0x28}},//
+
 {{0x3a,0x15},{0xd8}},//
 {{0x40,0x01},{0x02}},//
 {{0x40,0x04},{0x02}},//
@@ -789,7 +887,7 @@ static struct regval_list sensor_default_regs[] = {
 	{{0x58,0x3D},{0xCE}},
 	{{0x50,0x25},{0x00}},
 	{{0x3a,0x0f},{0x30}},
-	{{0x3a,0x10},{0x28}},
+	{{0x3a,0x10},{0x28}}, //COMMENT - LOOKS LIK ETHESE ARE THe BRIGHTNESS THRESHOLDS? 
 	{{0x3a,0x1b},{0x30}},
 	{{0x3a,0x1e},{0x26}},
 	{{0x3a,0x11},{0x60}},
@@ -2476,7 +2574,7 @@ static int sensor_power(struct v4l2_subdev *sd, int on)
 			csi_dev_print("enable oe!\n"); //MISKO
 			ret = sensor_write_array(sd, sensor_oe_enable_regs , ARRAY_SIZE(sensor_oe_enable_regs)); //MISKO
 			if(ret < 0) //MISKO
-				csi_dev_err("disalbe oe falied!\n"); //MISKO
+				csi_dev_err("enable oe falied!\n"); //MISKO
 			msleep(10);
 			break;
 		case CSI_SUBDEV_PWR_ON:
@@ -3043,8 +3141,8 @@ static int sensor_s_fmt(struct v4l2_subdev *sd,
 	if (ret)
 		return ret;
 
-	if(!((wsize->width == VGA_WIDTH)&&(wsize->height == VGA_HEIGHT)))
-	{
+	if(!((wsize->width == VGA_WIDTH)&&(wsize->height == VGA_HEIGHT))) {
+		csi_dev_print("SET EXPOSURE CALL!\n"); //MISKO
 		ret = sensor_set_exposure(sd,&gain,&exposurelow,&exposuremid,&exposurehigh);
 		if (ret)
 		{
@@ -3113,12 +3211,12 @@ static int sensor_s_fmt(struct v4l2_subdev *sd,
 	info->width = wsize->width;
 	info->height = wsize->height;
 
-			csi_dev_print("enable oe!\n"); //MISKO
+			csi_dev_print("enable oe x!\n"); //MISKO
 			ret = sensor_write_array(sd, sensor_oe_enable_regs , ARRAY_SIZE(sensor_oe_enable_regs)); //MISKO
 			if(ret < 0) //MISKO
 				csi_dev_err("disalbe oe falied!\n"); //MISKO
 
-	msleep(100);
+	//msleep(100);
 
 	return 0;
 }
@@ -3196,6 +3294,7 @@ static int sensor_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
  */
 
 /* *********************************************begin of ******************************************** */
+//MISKO https://gist.github.com/scottellis/860216
 static int sensor_queryctrl(struct v4l2_subdev *sd,
 		struct v4l2_queryctrl *qc)
 {
@@ -3203,40 +3302,61 @@ static int sensor_queryctrl(struct v4l2_subdev *sd,
 	/* see include/linux/videodev2.h for details */
 	/* see sensor_s_parm and sensor_g_parm for the meaning of value */
 
-	switch (qc->id) {
-//	case V4L2_CID_BRIGHTNESS:
-//		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);
-//	case V4L2_CID_CONTRAST:
-//		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);
-//	case V4L2_CID_SATURATION:
-//		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);
-//	case V4L2_CID_HUE:
-//		return v4l2_ctrl_query_fill(qc, -180, 180, 5, 0);
-	case V4L2_CID_VFLIP:
-	case V4L2_CID_HFLIP:
-		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
-//	case V4L2_CID_GAIN:
-//		return v4l2_ctrl_query_fill(qc, 0, 255, 1, 128);
-//	case V4L2_CID_AUTOGAIN:
-//		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 1);
-	case V4L2_CID_EXPOSURE:
-		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 0);
-	case V4L2_CID_EXPOSURE_AUTO:
-		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
-	case V4L2_CID_DO_WHITE_BALANCE:
-		return v4l2_ctrl_query_fill(qc, 0, 5, 1, 0);
-	case V4L2_CID_AUTO_WHITE_BALANCE:
-		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 1);
-	case V4L2_CID_COLORFX:
-		return v4l2_ctrl_query_fill(qc, 0, 9, 1, 0);
-	case V4L2_CID_CAMERA_FLASH_MODE:
-	  return v4l2_ctrl_query_fill(qc, 0, 4, 1, 0);
+
+	if (qc->id & V4L2_CTRL_FLAG_NEXT_CTRL ) {
+		qc->id &= ~V4L2_CTRL_FLAG_NEXT_CTRL;
+		int i;
+		int idx = -1;
+		for (i=0; i<ARRAY_SIZE(ov5640_controls); i++) {
+			//find the min id bigger then this
+			if (ov5640_controls[i].id > qc->id) {
+				// if we dont have one yet, or the current one is bigger then qc->id but less then the previous
+				if (idx==-1 || ( ov5640_controls[i].id < ov5640_controls[idx].id)) {
+					idx=i;
+				}
+			}
+		}
+		if (idx>=0) {
+				*qc = ov5640_controls[idx];
+				return 0;
+		}
+	} else { 
+		switch (qc->id) {
+	//	case V4L2_CID_BRIGHTNESS:
+	//		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);
+	//	case V4L2_CID_CONTRAST:
+	//		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);
+	//	case V4L2_CID_SATURATION:
+	//		return v4l2_ctrl_query_fill(qc, -4, 4, 1, 1);
+	//	case V4L2_CID_HUE:
+	//		return v4l2_ctrl_query_fill(qc, -180, 180, 5, 0);
+		case V4L2_CID_VFLIP:
+		case V4L2_CID_HFLIP:
+			return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+	//	case V4L2_CID_GAIN:
+	//		return v4l2_ctrl_query_fill(qc, 0, 255, 1, 128);
+	//	case V4L2_CID_AUTOGAIN:
+	//		return v4l2_ctrl_query_fill(qc, 0, 1, 1, 1);
+		case V4L2_CID_EXPOSURE:
+			return v4l2_ctrl_query_fill(qc, -4, 4, 1, 0);
+		case V4L2_CID_EXPOSURE_AUTO:
+			return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+		case V4L2_CID_DO_WHITE_BALANCE:
+			return v4l2_ctrl_query_fill(qc, 0, 5, 1, 0);
+		case V4L2_CID_AUTO_WHITE_BALANCE:
+			return v4l2_ctrl_query_fill(qc, 0, 1, 1, 1);
+		case V4L2_CID_COLORFX:
+			return v4l2_ctrl_query_fill(qc, 0, 9, 1, 0);
+		case V4L2_CID_CAMERA_FLASH_MODE:
+		  return v4l2_ctrl_query_fill(qc, 0, 4, 1, 0);
+		}
 	}
 	return -EINVAL;
 }
 
 static int sensor_g_hflip(struct v4l2_subdev *sd, __s32 *value)
 {
+	csi_dev_print("G HFLIP !\n"); //MISKO
 	int ret;
 	struct sensor_info *info = to_state(sd);
 	struct regval_list regs;
@@ -3259,6 +3379,7 @@ static int sensor_g_hflip(struct v4l2_subdev *sd, __s32 *value)
 
 static int sensor_s_hflip(struct v4l2_subdev *sd, int value)
 {
+	csi_dev_print("S HFLIP!\n"); //MISKO
 	int ret;
 	struct sensor_info *info = to_state(sd);
 	struct regval_list regs;
@@ -3685,6 +3806,7 @@ static int sensor_s_saturation(struct v4l2_subdev *sd, int value)
 
 static int sensor_g_exp(struct v4l2_subdev *sd, __s32 *value)
 {
+	csi_dev_print("G EXP!\n"); //MISKO
 	struct sensor_info *info = to_state(sd);
 
 	*value = info->exp;
@@ -3693,6 +3815,7 @@ static int sensor_g_exp(struct v4l2_subdev *sd, __s32 *value)
 
 static int sensor_s_exp(struct v4l2_subdev *sd, int value)
 {
+	csi_dev_print("S EXP!\n"); //MISKO
 	int ret;
 	struct sensor_info *info = to_state(sd);
 
